@@ -1,0 +1,20 @@
+# CDK
+cdk.out/
+cdk.context.json
+
+# TypeScript compiled output
+*.js
+!jest.config.js
+*.d.ts
+*.js.map
+package-lock.json
+
+# Node
+node_modules/
+
+# Rust
+target/
+Cargo.lock
+
+# OS
+.DS_Store

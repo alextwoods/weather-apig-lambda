@@ -1,0 +1,107 @@
+[
+    {
+        "id": "9447130",
+        "name": "Seattle",
+        "type": "tide",
+        "lat": 47.6026,
+        "lon": -122.3393
+    },
+    {
+        "id": "9446484",
+        "name": "Tacoma",
+        "type": "tide",
+        "lat": 47.2690,
+        "lon": -122.4132
+    },
+    {
+        "id": "9444900",
+        "name": "Port Townsend",
+        "type": "tide",
+        "lat": 48.1129,
+        "lon": -122.7595
+    },
+    {
+        "id": "9447110",
+        "name": "Anacortes",
+        "type": "tide",
+        "lat": 48.5117,
+        "lon": -122.6767
+    },
+    {
+        "id": "9449880",
+        "name": "Friday Harbor",
+        "type": "tide",
+        "lat": 48.5469,
+        "lon": -123.0128
+    },
+    {
+        "id": "9440910",
+        "name": "Olympia",
+        "type": "tide",
+        "lat": 47.0483,
+        "lon": -122.9050
+    },
+    {
+        "id": "46029",
+        "name": "Columbia River Bar",
+        "type": "buoy",
+        "lat": 46.163,
+        "lon": -124.487
+    },
+    {
+        "id": "46087",
+        "name": "Neah Bay",
+        "type": "buoy",
+        "lat": 48.494,
+        "lon": -124.727
+    },
+    {
+        "id": "46041",
+        "name": "Cape Elizabeth",
+        "type": "buoy",
+        "lat": 47.353,
+        "lon": -124.731
+    },
+    {
+        "id": "46005",
+        "name": "Washington Offshore",
+        "type": "buoy",
+        "lat": 46.100,
+        "lon": -131.001
+    },
+    {
+        "id": "8454000",
+        "name": "Providence, RI",
+        "type": "tide",
+        "lat": 41.8071,
+        "lon": -71.4012
+    },
+    {
+        "id": "8461490",
+        "name": "New London, CT",
+        "type": "tide",
+        "lat": 41.3614,
+        "lon": -72.0900
+    },
+    {
+        "id": "8510560",
+        "name": "Montauk, NY",
+        "type": "tide",
+        "lat": 41.0486,
+        "lon": -71.9597
+    },
+    {
+        "id": "9414290",
+        "name": "San Francisco",
+        "type": "tide",
+        "lat": 37.8063,
+        "lon": -122.4659
+    },
+    {
+        "id": "9410230",
+        "name": "La Jolla, CA",
+        "type": "tide",
+        "lat": 32.8669,
+        "lon": -117.2571
+    }
+]
