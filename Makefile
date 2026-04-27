@@ -8,7 +8,7 @@ CRATES = forecast geocode metadata stations
 all: build package
 
 build:
-	cargo build --release --target $(TARGET)
+	cargo zigbuild --release --target $(TARGET)
 
 package: $(LAMBDA_DIR)
 	@for crate in $(CRATES); do \

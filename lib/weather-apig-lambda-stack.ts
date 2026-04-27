@@ -29,7 +29,6 @@ export class WeatherApigLambdaStack extends cdk.Stack {
         // --- S3 Bucket for Cache ---
 
         const cacheBucket = new s3.Bucket(this, 'WeatherCacheBucket', {
-            bucketName: 'weather-cache',
             removalPolicy: cdk.RemovalPolicy.DESTROY,
             autoDeleteObjects: true,
             lifecycleRules: [{
