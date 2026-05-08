@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
@@ -27,7 +28,9 @@ pub fn build_water_temp_url(station_id: &str) -> String {
 
 /// Fetches and parses water temperature data from the NOAA CO-OPS API.
 ///
-/// Water temperature data is NOT cacheable — it is always fetched fresh.
+/// Water temperature data is cached in DynamoDB with a 3600-second
+/// (1-hour) TTL. Water temperature changes slowly (fractions of a degree
+/// per hour), so hourly freshness is sufficient.
 pub struct NoaaWaterTempFetcher;
 
 impl NoaaWaterTempFetcher {
@@ -36,7 +39,11 @@ impl NoaaWaterTempFetcher {
     }
 
     pub fn is_cacheable() -> bool {
-        false
+        true
+    }
+
+    pub fn ttl_secs() -> u64 {
+        3600
     }
 }
 
@@ -45,7 +52,7 @@ impl NoaaWaterTempFetcher {
 // ---------------------------------------------------------------------------
 
 /// Parsed water temperature data from the NOAA CO-OPS API.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WaterTemperatureData {
     /// NOAA station identifier (e.g., "9447130").
     pub station_id: String,
@@ -56,6 +63,24 @@ pub struct WaterTemperatureData {
     /// Timestamp of the reading (e.g., "2026-04-24 14:00"), or `None` if
     /// unavailable.
     pub timestamp: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Serialization / deserialization
+// ---------------------------------------------------------------------------
+
+/// Serializes `WaterTemperatureData` to JSON bytes for caching.
+pub fn serialize_water_temperature(
+    data: &WaterTemperatureData,
+) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(data)
+}
+
+/// Deserializes `WaterTemperatureData` from JSON bytes (cache read).
+pub fn deserialize_water_temperature(
+    bytes: &[u8],
+) -> Result<WaterTemperatureData, serde_json::Error> {
+    serde_json::from_slice(bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +185,8 @@ mod tests {
     #[test]
     fn test_source_metadata() {
         assert_eq!(NoaaWaterTempFetcher::source_id(), "noaa_water_temp");
-        assert!(!NoaaWaterTempFetcher::is_cacheable());
+        assert!(NoaaWaterTempFetcher::is_cacheable());
+        assert_eq!(NoaaWaterTempFetcher::ttl_secs(), 3600);
     }
 
     // -------------------------------------------------------------------
@@ -264,5 +290,44 @@ mod tests {
         let raw = serde_json::to_vec(&json).unwrap();
         let data = parse_water_temp_response(&raw, "9447130", "Seattle").unwrap();
         assert_eq!(data.temperature_celsius, Some(-1.2));
+    }
+
+    // -------------------------------------------------------------------
+    // Serialization round-trip tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_serialize_deserialize_water_temp_round_trip() {
+        let original = WaterTemperatureData {
+            station_id: "9447130".to_string(),
+            station_name: "Seattle".to_string(),
+            temperature_celsius: Some(10.5),
+            timestamp: Some("2026-04-24 14:00".to_string()),
+        };
+
+        let bytes = serialize_water_temperature(&original).unwrap();
+        let restored = deserialize_water_temperature(&bytes).unwrap();
+
+        assert_eq!(restored.station_id, original.station_id);
+        assert_eq!(restored.station_name, original.station_name);
+        assert_eq!(restored.temperature_celsius, original.temperature_celsius);
+        assert_eq!(restored.timestamp, original.timestamp);
+    }
+
+    #[test]
+    fn test_serialize_deserialize_water_temp_none_values() {
+        let original = WaterTemperatureData {
+            station_id: "9447130".to_string(),
+            station_name: "Seattle".to_string(),
+            temperature_celsius: None,
+            timestamp: None,
+        };
+
+        let bytes = serialize_water_temperature(&original).unwrap();
+        let restored = deserialize_water_temperature(&bytes).unwrap();
+
+        assert_eq!(restored.station_id, original.station_id);
+        assert_eq!(restored.temperature_celsius, None);
+        assert_eq!(restored.timestamp, None);
     }
 }

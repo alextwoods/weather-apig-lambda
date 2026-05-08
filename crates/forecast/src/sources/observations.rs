@@ -1,4 +1,5 @@
 use chrono::{DateTime, TimeDelta, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::models::haversine_km;
@@ -19,8 +20,11 @@ pub const NWS_ACCEPT: &str = "application/geo+json";
 
 /// Fetches and parses NWS observation data.
 ///
-/// Observations are NOT cacheable — they are always fetched fresh from the
-/// NWS API.
+/// Observations are cached in DynamoDB with a 1800-second (30-minute) TTL.
+/// NWS stations typically report every 15-60 minutes, so 30-minute freshness
+/// is sufficient and aligns with the cache warmer interval.
+/// The cached data includes both the station discovery result and the
+/// observation entries.
 pub struct ObservationsFetcher;
 
 impl ObservationsFetcher {
@@ -29,7 +33,11 @@ impl ObservationsFetcher {
     }
 
     pub fn is_cacheable() -> bool {
-        false
+        true
+    }
+
+    pub fn ttl_secs() -> u64 {
+        1800
     }
 }
 
@@ -71,7 +79,7 @@ pub fn pressure_pa_to_hpa(pa: f64) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Information about the observation station.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StationInfo {
     /// Station identifier (e.g., "KBFI").
     pub id: String,
@@ -86,7 +94,7 @@ pub struct StationInfo {
 }
 
 /// A single observation entry from the NWS API.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObservationEntry {
     /// ISO 8601 timestamp of the observation.
     pub timestamp: String,
@@ -101,12 +109,26 @@ pub struct ObservationEntry {
 }
 
 /// Parsed observation data including station info and observation entries.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObservationData {
     /// Metadata about the observation station.
     pub station: StationInfo,
     /// Observation entries, filtered and converted.
     pub entries: Vec<ObservationEntry>,
+}
+
+// ---------------------------------------------------------------------------
+// Serialization / deserialization
+// ---------------------------------------------------------------------------
+
+/// Serializes `ObservationData` to JSON bytes for caching.
+pub fn serialize_observations(data: &ObservationData) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(data)
+}
+
+/// Deserializes `ObservationData` from JSON bytes (cache read).
+pub fn deserialize_observations(bytes: &[u8]) -> Result<ObservationData, serde_json::Error> {
+    serde_json::from_slice(bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +412,8 @@ mod tests {
     #[test]
     fn test_source_metadata() {
         assert_eq!(ObservationsFetcher::source_id(), "observations");
-        assert!(!ObservationsFetcher::is_cacheable());
+        assert!(ObservationsFetcher::is_cacheable());
+        assert_eq!(ObservationsFetcher::ttl_secs(), 1800);
     }
 
     // -------------------------------------------------------------------

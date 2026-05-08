@@ -1,0 +1,21 @@
+[package]
+name = "cache_warmer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "cache_warmer"
+path = "src/main.rs"
+
+[dependencies]
+forecast = { path = "../forecast" }
+tokio = { version = "1", features = ["full"] }
+lambda_runtime = "0.13"
+serde_json = "1"
+aws-sdk-s3 = "1"
+aws-sdk-dynamodb = "1"
+aws-config = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }

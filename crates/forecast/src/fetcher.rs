@@ -2,12 +2,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use futures::future::join_all;
 use serde::Serialize;
 use tokio::task::JoinSet;
+use tracing::{info, warn};
 
 use crate::cache::{cache_key, CacheEntry, CacheStore, DynamoCacheStore, S3CacheStore};
 use crate::models::{
-    nearest_puget_sound_station, AppState, FetchParams, PUGET_SOUND_BOX, SALISH_SEA_BOX,
+    nearest_puget_sound_station, nearby_puget_sound_stations, AppState, EnsembleModel, FetchParams,
+    ENSEMBLE_MODELS, PUGET_SOUND_BOX, SALISH_SEA_BOX,
+};
+use crate::sources::ensemble_splitter::{
+    deserialize_per_model, merge_ensemble_models, serialize_per_model, split_ensemble_by_model,
 };
 use crate::sources::air_quality::{
     build_air_quality_url, parse_air_quality_response, AirQualityData, AirQualityFetcher,
@@ -22,15 +28,19 @@ use crate::sources::hrrr::{
     build_hrrr_url, filter_to_recent, parse_hrrr_response, HrrrData, HrrrFetcher,
 };
 use crate::sources::marine::{
-    all_sst_null, build_marine_url, parse_marine_response, MarineData, MarineFetcher,
+    build_marine_url, parse_marine_response, MarineData, MarineFetcher,
 };
-use crate::sources::noaa_tides::{build_tides_url, parse_tides_response, TidesData};
+use crate::sources::noaa_tides::{
+    build_tides_url, deserialize_tides, parse_tides_response, serialize_tides, TidesData,
+};
 use crate::sources::noaa_water_temp::{
-    build_water_temp_url, parse_water_temp_response, WaterTemperatureData,
+    build_water_temp_url, deserialize_water_temperature, parse_water_temp_response,
+    serialize_water_temperature, WaterTemperatureData,
 };
 use crate::sources::observations::{
-    build_observation_url, build_station_discovery_url, filter_observations_to_recent,
-    parse_observations, parse_station_discovery, ObservationData,
+    build_observation_url, build_station_discovery_url, deserialize_observations,
+    filter_observations_to_recent, parse_observations, parse_station_discovery, ObservationData,
+    serialize_observations,
 };
 use crate::sources::uv::{build_uv_url, parse_uv_response, UvData, UvFetcher};
 
@@ -294,6 +304,7 @@ where
 {
     // Step 1: Check cache (unless force-refreshing)
     let cached = if force_refresh {
+        info!(source = source_id, "Bypassing cache (force refresh)");
         None
     } else {
         cache.get(ck, source_id).await
@@ -303,25 +314,38 @@ where
         if entry.is_fresh() {
             // Cache hit — parse and return
             match parse_fn(&entry.data) {
-                Ok(data) => return SourceResult::Fresh(data, CacheMeta::from_entry(entry)),
+                Ok(data) => {
+                    info!(source = source_id, age_secs = entry.age_secs(), "Cache hit (fresh)");
+                    return SourceResult::Fresh(data, CacheMeta::from_entry(entry));
+                }
                 Err(_) => {
-                    // Cached data is corrupt — treat as cache miss and fetch upstream
+                    warn!(source = source_id, "Cached data corrupt, fetching upstream");
                 }
             }
+        } else {
+            info!(source = source_id, age_secs = entry.age_secs(), "Cache stale, fetching upstream");
         }
+    } else if !force_refresh {
+        info!(source = source_id, "Cache miss");
     }
 
     // Step 2: Fetch upstream
+    info!(source = source_id, "Fetching upstream");
+    let fetch_start = std::time::Instant::now();
     match fetch_fn.await {
         Ok(raw) => {
+            let fetch_elapsed_ms = fetch_start.elapsed().as_millis();
+            info!(source = source_id, bytes = raw.len(), elapsed_ms = fetch_elapsed_ms, "Upstream response received");
             // Parse the response
             match parse_fn(&raw) {
                 Ok(data) => {
                     // Update cache (fire-and-forget; errors are non-fatal)
                     let _ = cache.put(ck, source_id, &raw, ttl_secs).await;
+                    info!(source = source_id, "Cached updated");
                     SourceResult::Refreshed(data, CacheMeta::fresh_now())
                 }
                 Err(e) => {
+                    warn!(source = source_id, error = %e, "Parse failed after upstream fetch");
                     // Parse failed — fall back to stale cache if available
                     if let Some(ref entry) = cached {
                         if let Ok(stale_data) = parse_fn(&entry.data) {
@@ -337,6 +361,7 @@ where
             }
         }
         Err(UpstreamError::Throttled) => {
+            warn!(source = source_id, "Upstream throttled (HTTP 420)");
             // HTTP 420 — use cached data if available
             if let Some(ref entry) = cached {
                 if let Ok(data) = parse_fn(&entry.data) {
@@ -346,6 +371,7 @@ where
             SourceResult::Failed("upstream throttled (HTTP 420), no cached data available".into())
         }
         Err(err) => {
+            warn!(source = source_id, error = %err, "Upstream fetch failed");
             // Other upstream failure — fall back to stale cache
             let err_msg = err.to_string();
             if let Some(ref entry) = cached {
@@ -364,30 +390,6 @@ where
 
 
 // ---------------------------------------------------------------------------
-// fetch_without_cache — for non-cacheable sources
-// ---------------------------------------------------------------------------
-
-/// Fetches data for a non-cacheable source (observations, NOAA, CIOPS).
-/// Returns `Refreshed` on success or `Failed` on error.
-async fn fetch_without_cache<T, F, Fut>(
-    parse_fn: F,
-    fetch_fn: Fut,
-) -> SourceResult<T>
-where
-    T: Clone,
-    F: Fn(&[u8]) -> Result<T, String>,
-    Fut: std::future::Future<Output = Result<Vec<u8>, UpstreamError>>,
-{
-    match fetch_fn.await {
-        Ok(raw) => match parse_fn(&raw) {
-            Ok(data) => SourceResult::Refreshed(data, CacheMeta::fresh_now()),
-            Err(e) => SourceResult::Failed(format!("parse error: {e}")),
-        },
-        Err(err) => SourceResult::Failed(err.to_string()),
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Per-source fetch functions
 // ---------------------------------------------------------------------------
 
@@ -403,27 +405,237 @@ fn should_force_refresh(params: &FetchParams, source_id: &str) -> bool {
     false
 }
 
-/// Fetch ensemble data with cache support.
-async fn fetch_ensemble(
+/// Fetch ensemble data with per-model caching.
+///
+/// Checks per-model S3 cache freshness for each selected model concurrently.
+/// If all selected models are fresh, loads and merges their cached data.
+/// If any selected model is stale or missing, fetches from upstream, splits
+/// by model, caches all 5 models separately, then merges only the selected.
+pub async fn fetch_ensemble_per_model(
     client: &reqwest::Client,
     cache: &dyn CacheStore,
     params: &FetchParams,
+    selected_models: &[&EnsembleModel],
     timeout: Duration,
 ) -> SourceResult<ParsedEnsembleData> {
     let ck = cache_key(params.lat, params.lon);
-    let url = build_ensemble_url(params.lat, params.lon);
     let force = should_force_refresh(params, EnsembleFetcher::source_id());
 
-    fetch_with_cache(
-        cache,
-        &ck,
-        EnsembleFetcher::source_id(),
-        EnsembleFetcher::ttl_secs(),
-        force,
-        |raw| parse_ensemble_response(raw),
-        http_get(client, &url, timeout),
-    )
-    .await
+    // Build per-model source IDs (e.g., "ensemble_ecmwf_ifs025_ensemble")
+    let model_source_ids: Vec<(&EnsembleModel, String)> = selected_models
+        .iter()
+        .map(|m| (*m, format!("ensemble_{}", m.api_key_suffix)))
+        .collect();
+
+    // -----------------------------------------------------------------------
+    // Step 1: Check per-model cache freshness concurrently
+    // -----------------------------------------------------------------------
+    if !force {
+        let mut cache_futures = Vec::with_capacity(model_source_ids.len());
+        for (model, source_id) in &model_source_ids {
+            cache_futures.push(async {
+                let entry = cache.get(&ck, source_id).await;
+                (*model, source_id.as_str(), entry)
+            });
+        }
+
+        let cache_results = join_all(cache_futures).await;
+
+        // Check if all selected models have fresh cache entries
+        let all_fresh = cache_results
+            .iter()
+            .all(|(_, _, entry)| entry.as_ref().map(|e| e.is_fresh()).unwrap_or(false));
+
+        if all_fresh {
+            info!("All selected ensemble models have fresh cache entries");
+
+            // Load and merge cached data for selected models
+            let mut per_model_data = Vec::with_capacity(selected_models.len());
+            let mut times: Option<Vec<String>> = None;
+            let mut oldest_entry: Option<&CacheEntry> = None;
+
+            for (_, _, entry) in &cache_results {
+                let entry = entry.as_ref().unwrap(); // safe: all_fresh guarantees Some
+                match deserialize_per_model(&entry.data) {
+                    Ok((t, model_data)) => {
+                        if times.is_none() {
+                            times = Some(t);
+                        }
+                        per_model_data.push(model_data);
+
+                        // Track the oldest entry for CacheMeta
+                        match oldest_entry {
+                            None => oldest_entry = Some(entry),
+                            Some(prev) if entry.age_secs() > prev.age_secs() => {
+                                oldest_entry = Some(entry)
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Cached per-model data corrupt, fetching upstream");
+                        // Fall through to upstream fetch
+                        return fetch_ensemble_upstream(
+                            client, cache, params, selected_models, &ck, timeout, None,
+                        )
+                        .await;
+                    }
+                }
+            }
+
+            let times = times.unwrap_or_default();
+            let model_refs: Vec<&_> = per_model_data.iter().collect();
+            let merged = merge_ensemble_models(times, &model_refs);
+            let meta = CacheMeta::from_entry(oldest_entry.unwrap());
+
+            return SourceResult::Fresh(merged, meta);
+        }
+
+        // Collect stale entries for fallback
+        let stale_entries: Vec<_> = cache_results
+            .into_iter()
+            .map(|(model, source_id, entry)| (model, source_id.to_string(), entry))
+            .collect();
+
+        return fetch_ensemble_upstream(
+            client,
+            cache,
+            params,
+            selected_models,
+            &ck,
+            timeout,
+            Some(stale_entries),
+        )
+        .await;
+    }
+
+    // force_refresh — skip cache entirely
+    fetch_ensemble_upstream(client, cache, params, selected_models, &ck, timeout, None).await
+}
+
+/// Helper: fetch ensemble data from upstream, split by model, cache all 5,
+/// and merge only the selected models.
+async fn fetch_ensemble_upstream(
+    client: &reqwest::Client,
+    cache: &dyn CacheStore,
+    params: &FetchParams,
+    selected_models: &[&EnsembleModel],
+    ck: &str,
+    timeout: Duration,
+    stale_entries: Option<Vec<(&EnsembleModel, String, Option<CacheEntry>)>>,
+) -> SourceResult<ParsedEnsembleData> {
+    let url = build_ensemble_url(params.lat, params.lon);
+
+    info!(source = "ensemble", "Fetching upstream (per-model)");
+    match http_get(client, &url, timeout).await {
+        Ok(raw) => {
+            info!(source = "ensemble", bytes = raw.len(), "Upstream response received");
+            match parse_ensemble_response(&raw) {
+                Ok(combined) => {
+                    // Split by model and cache ALL 5 models
+                    let split = split_ensemble_by_model(&combined);
+                    for model in &ENSEMBLE_MODELS {
+                        let source_id = format!("ensemble_{}", model.api_key_suffix);
+                        if let Some(model_data) = split.get(model.api_key_suffix) {
+                            if let Ok(bytes) = serialize_per_model(&combined.times, model_data) {
+                                let _ = cache
+                                    .put(ck, &source_id, &bytes, EnsembleFetcher::ttl_secs())
+                                    .await;
+                            }
+                        }
+                    }
+
+                    // Merge only the selected models
+                    let selected_data: Vec<&_> = selected_models
+                        .iter()
+                        .filter_map(|m| split.get(m.api_key_suffix))
+                        .collect();
+                    let merged = merge_ensemble_models(combined.times, &selected_data);
+
+                    SourceResult::Refreshed(merged, CacheMeta::fresh_now())
+                }
+                Err(e) => {
+                    warn!(source = "ensemble", error = %e, "Parse failed after upstream fetch");
+                    // Fall back to stale cache if available
+                    try_stale_fallback(selected_models, stale_entries, format!("parse error: {e}"))
+                }
+            }
+        }
+        Err(UpstreamError::Throttled) => {
+            warn!(source = "ensemble", "Upstream throttled (HTTP 420)");
+            // Try to return cached data (even stale) on throttle
+            if let Some(stale) = stale_entries {
+                if let Some(merged) = try_merge_stale_cache(selected_models, &stale) {
+                    let meta = stale_cache_meta(&stale);
+                    return SourceResult::Throttled(merged, meta);
+                }
+            }
+            SourceResult::Failed(
+                "upstream throttled (HTTP 420), no cached data available".into(),
+            )
+        }
+        Err(err) => {
+            warn!(source = "ensemble", error = %err, "Upstream fetch failed");
+            let err_msg = err.to_string();
+            try_stale_fallback(selected_models, stale_entries, err_msg)
+        }
+    }
+}
+
+/// Attempt to merge stale cached data for the selected models.
+/// Returns `None` if any selected model lacks a cache entry.
+fn try_merge_stale_cache(
+    selected_models: &[&EnsembleModel],
+    stale_entries: &[(&EnsembleModel, String, Option<CacheEntry>)],
+) -> Option<ParsedEnsembleData> {
+    let mut per_model_data = Vec::with_capacity(selected_models.len());
+    let mut times: Option<Vec<String>> = None;
+
+    for model in selected_models {
+        // Find the stale entry for this model
+        let entry = stale_entries
+            .iter()
+            .find(|(m, _, _)| m.api_key_suffix == model.api_key_suffix)
+            .and_then(|(_, _, e)| e.as_ref())?;
+
+        let (t, model_data) = deserialize_per_model(&entry.data).ok()?;
+        if times.is_none() {
+            times = Some(t);
+        }
+        per_model_data.push(model_data);
+    }
+
+    let times = times.unwrap_or_default();
+    let model_refs: Vec<&_> = per_model_data.iter().collect();
+    Some(merge_ensemble_models(times, &model_refs))
+}
+
+/// Build a CacheMeta from the oldest stale entry.
+fn stale_cache_meta(stale_entries: &[(&EnsembleModel, String, Option<CacheEntry>)]) -> CacheMeta {
+    let oldest = stale_entries
+        .iter()
+        .filter_map(|(_, _, e)| e.as_ref())
+        .max_by_key(|e| e.age_secs());
+
+    match oldest {
+        Some(entry) => CacheMeta::from_entry(entry),
+        None => CacheMeta::fresh_now(),
+    }
+}
+
+/// Try to fall back to stale cached data, or return Failed.
+fn try_stale_fallback(
+    selected_models: &[&EnsembleModel],
+    stale_entries: Option<Vec<(&EnsembleModel, String, Option<CacheEntry>)>>,
+    err_msg: String,
+) -> SourceResult<ParsedEnsembleData> {
+    if let Some(stale) = stale_entries {
+        if let Some(merged) = try_merge_stale_cache(selected_models, &stale) {
+            let meta = stale_cache_meta(&stale);
+            return SourceResult::Stale(merged, meta, err_msg);
+        }
+    }
+    SourceResult::Failed(err_msg)
 }
 
 /// Fetch marine data with cache support.
@@ -435,7 +647,7 @@ async fn fetch_marine(
 ) -> SourceResult<MarineData> {
     let mlat = params.marine_lat.unwrap_or(params.lat);
     let mlon = params.marine_lon.unwrap_or(params.lon);
-    let ck = cache_key(mlat, mlon);
+    let ck = cache_key(params.lat, params.lon); // Use primary location key to align with cache warmer
     let url = build_marine_url(mlat, mlon);
     let force = should_force_refresh(params, MarineFetcher::source_id());
 
@@ -539,93 +751,199 @@ async fn fetch_air_quality(
     .await
 }
 
-/// Fetch NWS observations (not cached).
+/// Fetch NWS observations with DynamoDB cache support (300s TTL).
+///
+/// The cached data includes both the station discovery result and the
+/// observation entries, so a cache hit avoids both NWS API calls.
 ///
 /// If a `station_id` is provided, fetches directly from that station.
 /// Otherwise, discovers the nearest station via the NWS points API.
 async fn fetch_observations(
     client: &reqwest::Client,
+    cache: &dyn CacheStore,
     params: &FetchParams,
     timeout: Duration,
 ) -> SourceResult<ObservationData> {
+    let ck = cache_key(params.lat, params.lon);
+    let force = should_force_refresh(params, "observations");
     let now = Utc::now();
 
-    // Step 1: Determine the station to fetch from
-    let station_info = if let Some(ref sid) = params.station_id {
-        // Use the provided station ID — we don't have full metadata, so
-        // construct a minimal StationInfo. The observation response will
-        // fill in details.
-        crate::sources::observations::StationInfo {
-            id: sid.clone(),
-            name: String::new(),
-            latitude: params.lat,
-            longitude: params.lon,
-            distance_km: 0.0,
-        }
-    } else {
-        // Discover the nearest station
-        let discovery_url = build_station_discovery_url(params.lat, params.lon);
-        let raw = match http_get_nws(client, &discovery_url, timeout).await {
-            Ok(r) => r,
-            Err(e) => return SourceResult::Failed(format!("station discovery failed: {e}")),
-        };
-        match parse_station_discovery(&raw, params.lat, params.lon) {
-            Ok(info) => info,
-            Err(e) => return SourceResult::Failed(format!("station discovery parse error: {e}")),
-        }
-    };
+    let result = fetch_with_cache(
+        cache,
+        &ck,
+        "observations",
+        1800, // 30-minute TTL
+        force,
+        |raw| {
+            deserialize_observations(raw)
+                .map_err(|e| format!("observation deserialize error: {e}"))
+        },
+        async {
+            // Perform station discovery (if needed) and observation fetch,
+            // then serialize the combined result for caching.
 
-    // Step 2: Fetch observations from the station
-    let obs_url = build_observation_url(&station_info.id);
-    let raw = match http_get_nws(client, &obs_url, timeout).await {
-        Ok(r) => r,
-        Err(e) => return SourceResult::Failed(format!("observation fetch failed: {e}")),
-    };
+            // Step 1: Determine the station to fetch from
+            let station_info = if let Some(ref sid) = params.station_id {
+                crate::sources::observations::StationInfo {
+                    id: sid.clone(),
+                    name: String::new(),
+                    latitude: params.lat,
+                    longitude: params.lon,
+                    distance_km: 0.0,
+                }
+            } else {
+                let discovery_url = build_station_discovery_url(params.lat, params.lon);
+                let raw = http_get_nws(client, &discovery_url, timeout).await?;
+                parse_station_discovery(&raw, params.lat, params.lon)
+                    .map_err(|e| UpstreamError::ParseError(format!("station discovery: {e}")))?
+            };
 
-    let entries = match parse_observations(&raw) {
-        Ok(e) => e,
-        Err(e) => return SourceResult::Failed(format!("observation parse error: {e}")),
-    };
+            // Step 2: Fetch observations from the station
+            let obs_url = build_observation_url(&station_info.id);
+            let raw = http_get_nws(client, &obs_url, timeout).await?;
+            let entries = parse_observations(&raw)
+                .map_err(|e| UpstreamError::ParseError(format!("observations: {e}")))?;
 
-    // Step 3: Filter to recent 12 hours
-    let filtered = filter_observations_to_recent(entries, now);
+            // Step 3: Filter to recent 12 hours
+            let filtered = filter_observations_to_recent(entries, now);
 
-    let data = ObservationData {
-        station: station_info,
-        entries: filtered,
-    };
+            let data = ObservationData {
+                station: station_info,
+                entries: filtered,
+            };
 
-    SourceResult::Refreshed(data, CacheMeta::fresh_now())
+            // Serialize the combined station + entries for caching
+            serialize_observations(&data)
+                .map_err(|e| UpstreamError::ParseError(format!("observation serialize: {e}")))
+        },
+    )
+    .await;
+
+    result
 }
 
-/// Fetch NOAA water temperature (not cached).
+/// Fetch NOAA water temperature with DynamoDB cache support (900s TTL).
+///
+/// Tries the given station first. If it fails (e.g., the station doesn't
+/// offer water temperature), tries fallback stations in order of proximity.
+///
+/// The cached data includes the successful station's result, so a cache hit
+/// avoids all NOAA API calls. Uses the primary location cache key so the
+/// cache warmer can keep it warm.
 async fn fetch_water_temperature(
     client: &reqwest::Client,
-    station_id: &str,
-    station_name: &str,
+    cache: &dyn CacheStore,
+    primary_cache_key: &str,
+    stations: &[(&str, &str)], // (station_id, station_name) pairs, nearest first
     timeout: Duration,
 ) -> SourceResult<WaterTemperatureData> {
-    let url = build_water_temp_url(station_id);
-    fetch_without_cache(
-        |raw| parse_water_temp_response(raw, station_id, station_name),
-        http_get(client, &url, timeout),
+    fetch_with_cache(
+        cache,
+        primary_cache_key,
+        "water_temperature",
+        3600, // 1-hour TTL (water temp changes slowly)
+        false,
+        |raw| {
+            deserialize_water_temperature(raw)
+                .map_err(|e| format!("water_temperature deserialize error: {e}"))
+        },
+        async {
+            // Try each station in order until one succeeds with a temperature
+            for (station_id, station_name) in stations {
+                let url = build_water_temp_url(station_id);
+                match http_get(client, &url, timeout).await {
+                    Ok(raw) => {
+                        match parse_water_temp_response(&raw, station_id, station_name) {
+                            Ok(data) if data.temperature_celsius.is_some() => {
+                                info!(
+                                    station_id = station_id,
+                                    station_name = station_name,
+                                    "Water temperature fetched successfully"
+                                );
+                                return serialize_water_temperature(&data)
+                                    .map_err(|e| UpstreamError::ParseError(
+                                        format!("water_temperature serialize: {e}")
+                                    ));
+                            }
+                            Ok(_) => {
+                                warn!(
+                                    station_id = station_id,
+                                    station_name = station_name,
+                                    "Water temperature returned null, trying next station"
+                                );
+                                continue;
+                            }
+                            Err(e) => {
+                                warn!(
+                                    station_id = station_id,
+                                    station_name = station_name,
+                                    error = %e,
+                                    "Water temperature parse failed, trying next station"
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            station_id = station_id,
+                            station_name = station_name,
+                            error = %e,
+                            "Water temperature not available at this station, trying next"
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            Err(UpstreamError::ParseError(
+                "water temperature not available at any nearby NOAA station".to_string(),
+            ))
+        },
     )
     .await
 }
 
-/// Fetch NOAA tide predictions (not cached).
+/// Fetch NOAA tide predictions with DynamoDB cache support (3600s TTL).
+///
+/// The cached data is serialized as JSON. On cache hit, the data is
+/// deserialized without any NOAA API calls.
+///
+/// Fetch NOAA tide predictions with DynamoDB cache support (3600s TTL).
+///
+/// The cached data is serialized as JSON. On cache hit, the data is
+/// deserialized without any NOAA API calls.
+///
+/// Uses the primary location cache key so the cache warmer can keep it warm.
 async fn fetch_tides(
     client: &reqwest::Client,
+    cache: &dyn CacheStore,
+    primary_cache_key: &str,
     station_id: &str,
     station_name: &str,
     begin_date: &str,
     end_date: &str,
     timeout: Duration,
 ) -> SourceResult<TidesData> {
-    let url = build_tides_url(station_id, begin_date, end_date);
-    fetch_without_cache(
-        |raw| parse_tides_response(raw, station_id, station_name),
-        http_get(client, &url, timeout),
+    fetch_with_cache(
+        cache,
+        primary_cache_key,
+        "tides",
+        3600, // 1-hour TTL
+        false,
+        |raw| {
+            deserialize_tides(raw)
+                .map_err(|e| format!("tides deserialize error: {e}"))
+        },
+        async {
+            let url = build_tides_url(station_id, begin_date, end_date);
+            let raw = http_get(client, &url, timeout).await?;
+            let data = parse_tides_response(&raw, station_id, station_name)
+                .map_err(|e| UpstreamError::ParseError(format!("tides: {e}")))?;
+
+            serialize_tides(&data)
+                .map_err(|e| UpstreamError::ParseError(format!("tides serialize: {e}")))
+        },
     )
     .await
 }
@@ -699,9 +1017,21 @@ async fn fetch_ciops_sst(
 ///   CIOPS SST.
 ///
 /// Returns an `AllSourceResults` with the outcome of every source.
-pub async fn fetch_all_sources(state: &AppState, params: &FetchParams) -> AllSourceResults {
+pub async fn fetch_all_sources(
+    state: &AppState,
+    params: &FetchParams,
+    selected_models: &[&EnsembleModel],
+) -> AllSourceResults {
+    let orchestration_start = std::time::Instant::now();
     let timeout = Duration::from_secs(state.config.default_timeout_secs);
     let client = &state.http_client;
+
+    info!(
+        lat = params.lat,
+        lon = params.lon,
+        timeout_secs = state.config.default_timeout_secs,
+        "Starting fetch orchestration"
+    );
 
     // Build cache stores
     let s3_cache: Arc<dyn CacheStore> = Arc::new(S3CacheStore::new(
@@ -723,8 +1053,26 @@ pub async fn fetch_all_sources(state: &AppState, params: &FetchParams) -> AllSou
     let client_clone = client.clone();
     let s3_cache_clone = Arc::clone(&s3_cache);
     let params_clone = params.clone();
+    let selected_models_owned: Vec<&'static EnsembleModel> = selected_models
+        .iter()
+        .map(|m| {
+            // Map back to 'static references from ENSEMBLE_MODELS
+            ENSEMBLE_MODELS
+                .iter()
+                .find(|em| em.api_key_suffix == m.api_key_suffix)
+                .expect("selected_models should only contain valid ENSEMBLE_MODELS entries")
+        })
+        .collect();
     let ensemble_task = tokio::spawn(async move {
-        fetch_ensemble(&client_clone, s3_cache_clone.as_ref(), &params_clone, timeout).await
+        let model_refs: Vec<&EnsembleModel> = selected_models_owned.iter().copied().collect();
+        fetch_ensemble_per_model(
+            &client_clone,
+            s3_cache_clone.as_ref(),
+            &params_clone,
+            &model_refs,
+            timeout,
+        )
+        .await
     });
 
     let client_clone = client.clone();
@@ -756,62 +1104,144 @@ pub async fn fetch_all_sources(state: &AppState, params: &FetchParams) -> AllSou
     });
 
     let client_clone = client.clone();
+    let ddb_cache_clone = Arc::clone(&ddb_cache);
     let params_clone = params.clone();
     let observations_task = tokio::spawn(async move {
-        fetch_observations(&client_clone, &params_clone, timeout).await
+        fetch_observations(&client_clone, ddb_cache_clone.as_ref(), &params_clone, timeout).await
     });
 
-    // Await marine first — we need its result for Phase 2 decisions
-    let marine_result = marine_task
-        .await
-        .unwrap_or_else(|e| SourceResult::Failed(format!("marine task panicked: {e}")));
-
     // -----------------------------------------------------------------------
-    // Phase 2: Conditional sources based on marine result
+    // Phase 2 speculative cache check: Before awaiting marine, check if
+    // NOAA tides/water_temp are already cached for the marine coordinates.
+    // A cache hit implies the location was previously eligible (since the
+    // cache key encodes the marine coordinates and data was only cached
+    // after a successful fetch for an eligible location).
     // -----------------------------------------------------------------------
 
     let mlat = params.marine_lat.unwrap_or(params.lat);
     let mlon = params.marine_lon.unwrap_or(params.lon);
+    let primary_ck = cache_key(params.lat, params.lon);
 
-    let sst_is_null = marine_result
-        .data()
-        .map(|d| all_sst_null(d))
-        .unwrap_or(false);
+    // For Puget Sound locations, we know the marine API won't have SST data,
+    // so we can start tides/water_temperature fetches immediately in Phase 1
+    // rather than waiting for the marine result to confirm sst_is_null.
+    // This removes ~450ms from the critical path.
+    let (tides_task, water_temp_task, speculative_tides, speculative_water_temp) =
+        if PUGET_SOUND_BOX.contains(mlat, mlon) {
+            // First try the speculative cache check — if both are cached, skip fetching.
+            let (tides_entry, water_temp_entry) = tokio::join!(
+                ddb_cache.get(&primary_ck, "tides"),
+                ddb_cache.get(&primary_ck, "water_temperature"),
+            );
 
-    // NOAA tides + water temperature (Puget Sound)
-    let (tides_task, water_temp_task) = if sst_is_null && PUGET_SOUND_BOX.contains(mlat, mlon) {
+            let tides_fresh = tides_entry.as_ref().map(|e| e.is_fresh()).unwrap_or(false);
+            let wt_fresh = water_temp_entry.as_ref().map(|e| e.is_fresh()).unwrap_or(false);
+
+            if tides_fresh && wt_fresh {
+                // Parse the cached data — if parsing fails, fall back to fetching.
+                let tides_parsed = tides_entry.as_ref().and_then(|entry| {
+                    deserialize_tides(&entry.data).ok().map(|data| {
+                        info!(source = "tides", age_secs = entry.age_secs(), "Speculative cache hit (fresh)");
+                        SourceResult::Fresh(data, CacheMeta::from_entry(entry))
+                    })
+                });
+                let wt_parsed = water_temp_entry.as_ref().and_then(|entry| {
+                    deserialize_water_temperature(&entry.data).ok().map(|data| {
+                        info!(source = "water_temperature", age_secs = entry.age_secs(), "Speculative cache hit (fresh)");
+                        SourceResult::Fresh(data, CacheMeta::from_entry(entry))
+                    })
+                });
+
+                match (tides_parsed, wt_parsed) {
+                    (Some(t), Some(w)) => {
+                        info!("Speculative NOAA cache hit — returning tides and water_temperature from cache without waiting for marine");
+                        (None, None, Some(t), Some(w))
+                    }
+                    _ => {
+                        info!("Speculative NOAA cache parse failed, spawning fetch tasks");
+                        // Fall through to spawn fetch tasks below
+                        (None, None, None, None)
+                    }
+                }
+            } else {
+                info!(
+                    tides_cached = tides_fresh,
+                    water_temp_cached = wt_fresh,
+                    "Speculative NOAA cache miss, spawning fetch tasks immediately (Puget Sound location)"
+                );
+                (None, None, None, None)
+            }
+        } else {
+            (None, None, None, None)
+        };
+
+    // If we're in Puget Sound and didn't get a speculative cache hit, spawn
+    // tides/water_temp fetches now (Phase 1) rather than waiting for marine.
+    let (tides_task, water_temp_task) = if PUGET_SOUND_BOX.contains(mlat, mlon)
+        && speculative_tides.is_none()
+        && tides_task.is_none()
+    {
         if let Some(station) = nearest_puget_sound_station(mlat, mlon) {
-            // Compute tide date range from marine times (or use a default 7-day window)
             let now = Utc::now();
             let begin = now.format("%Y%m%d").to_string();
             let end = (now + chrono::Duration::days(7)).format("%Y%m%d").to_string();
 
             let client_clone = client.clone();
+            let ddb_cache_clone = Arc::clone(&ddb_cache);
             let sid = station.id.to_string();
             let sname = station.name.to_string();
             let begin_clone = begin.clone();
             let end_clone = end.clone();
+            let primary_ck_clone = primary_ck.clone();
             let tides = tokio::spawn(async move {
-                fetch_tides(&client_clone, &sid, &sname, &begin_clone, &end_clone, timeout).await
+                fetch_tides(
+                    &client_clone,
+                    ddb_cache_clone.as_ref(),
+                    &primary_ck_clone,
+                    &sid,
+                    &sname,
+                    &begin_clone,
+                    &end_clone,
+                    timeout,
+                )
+                .await
             });
 
+            let nearby = nearby_puget_sound_stations(mlat, mlon);
+            let station_pairs: Vec<(String, String)> = nearby
+                .iter()
+                .map(|s| (s.id.to_string(), s.name.to_string()))
+                .collect();
             let client_clone = client.clone();
-            let sid = station.id.to_string();
-            let sname = station.name.to_string();
+            let ddb_cache_clone = Arc::clone(&ddb_cache);
+            let primary_ck_clone = primary_ck.clone();
             let water_temp = tokio::spawn(async move {
-                fetch_water_temperature(&client_clone, &sid, &sname, timeout).await
+                let pairs: Vec<(&str, &str)> = station_pairs
+                    .iter()
+                    .map(|(id, name)| (id.as_str(), name.as_str()))
+                    .collect();
+                fetch_water_temperature(
+                    &client_clone,
+                    ddb_cache_clone.as_ref(),
+                    &primary_ck_clone,
+                    &pairs,
+                    timeout,
+                )
+                .await
             });
 
             (Some(tides), Some(water_temp))
         } else {
-            (None, None)
+            (tides_task, water_temp_task)
         }
     } else {
-        (None, None)
+        (tides_task, water_temp_task)
     };
 
-    // CIOPS SST (Salish Sea)
-    let ciops_task = if sst_is_null && SALISH_SEA_BOX.contains(mlat, mlon) {
+    // CIOPS SST (Salish Sea) — spawn immediately based on geography alone.
+    // For Salish Sea locations, the marine API never has SST data, so we don't
+    // need to wait for the marine result to confirm sst_is_null.
+    let ciops_task = if SALISH_SEA_BOX.contains(mlat, mlon) {
         let client_clone = client.clone();
         Some(tokio::spawn(async move {
             fetch_ciops_sst(&client_clone, mlat, mlon, timeout).await
@@ -820,42 +1250,72 @@ pub async fn fetch_all_sources(state: &AppState, params: &FetchParams) -> AllSou
         None
     };
 
+    // Await marine — we still need its result for the response data.
+    info!("Awaiting marine result for Phase 2 decisions");
+    let marine_await_start = std::time::Instant::now();
+    let marine_result = marine_task
+        .await
+        .unwrap_or_else(|e| SourceResult::Failed(format!("marine task panicked: {e}")));
+    info!(elapsed_ms = marine_await_start.elapsed().as_millis(), "Marine result received");
+
+    // -----------------------------------------------------------------------
+    // All conditional sources (tides, water_temp, CIOPS SST) are now spawned
+    // in Phase 1 based on geography alone. No Phase 2 decisions needed.
+    // -----------------------------------------------------------------------
+
+    info!(
+        in_puget_sound = PUGET_SOUND_BOX.contains(mlat, mlon),
+        in_salish_sea = SALISH_SEA_BOX.contains(mlat, mlon),
+        speculative_hit = speculative_tides.is_some(),
+        "Phase 1 complete"
+    );
+
     // -----------------------------------------------------------------------
     // Await all remaining tasks
     // -----------------------------------------------------------------------
 
+    info!("Awaiting remaining Phase 1 tasks");
+    let phase1_await_start = std::time::Instant::now();
+
     let ensemble_result = ensemble_task
         .await
         .unwrap_or_else(|e| SourceResult::Failed(format!("ensemble task panicked: {e}")));
+    info!(elapsed_ms = phase1_await_start.elapsed().as_millis(), "Ensemble complete");
 
     let hrrr_result = hrrr_task
         .await
         .unwrap_or_else(|e| SourceResult::Failed(format!("hrrr task panicked: {e}")));
+    info!(elapsed_ms = phase1_await_start.elapsed().as_millis(), "HRRR complete");
 
     let uv_result = uv_task
         .await
         .unwrap_or_else(|e| SourceResult::Failed(format!("uv task panicked: {e}")));
+    info!(elapsed_ms = phase1_await_start.elapsed().as_millis(), "UV complete");
 
     let air_quality_result = air_quality_task
         .await
         .unwrap_or_else(|e| SourceResult::Failed(format!("air_quality task panicked: {e}")));
+    info!(elapsed_ms = phase1_await_start.elapsed().as_millis(), "Air quality complete");
 
     let observations_result = observations_task
         .await
         .unwrap_or_else(|e| SourceResult::Failed(format!("observations task panicked: {e}")));
+    info!(elapsed_ms = phase1_await_start.elapsed().as_millis(), "Observations complete");
 
-    let tides_result = match tides_task {
-        Some(task) => task
+    let tides_result = match (speculative_tides, tides_task) {
+        (Some(result), _) => result,
+        (None, Some(task)) => task
             .await
             .unwrap_or_else(|e| SourceResult::Failed(format!("tides task panicked: {e}"))),
-        None => SourceResult::Skipped,
+        (None, None) => SourceResult::Skipped,
     };
 
-    let water_temp_result = match water_temp_task {
-        Some(task) => task
+    let water_temp_result = match (speculative_water_temp, water_temp_task) {
+        (Some(result), _) => result,
+        (None, Some(task)) => task
             .await
             .unwrap_or_else(|e| SourceResult::Failed(format!("water_temp task panicked: {e}"))),
-        None => SourceResult::Skipped,
+        (None, None) => SourceResult::Skipped,
     };
 
     let ciops_result = match ciops_task {
@@ -864,6 +1324,8 @@ pub async fn fetch_all_sources(state: &AppState, params: &FetchParams) -> AllSou
             .unwrap_or_else(|e| SourceResult::Failed(format!("ciops task panicked: {e}"))),
         None => SourceResult::Skipped,
     };
+
+    info!(total_orchestration_ms = orchestration_start.elapsed().as_millis(), "All sources complete, returning results");
 
     AllSourceResults {
         ensemble: ensemble_result,

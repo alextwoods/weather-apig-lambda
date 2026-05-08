@@ -119,17 +119,36 @@ impl CacheStore for S3CacheStore {
     async fn get(&self, cache_key: &str, source: &str) -> Option<CacheEntry> {
         let key = Self::object_key(cache_key, source);
 
-        // HeadObject first to check freshness without downloading the body.
-        let head = self
+        // Single GetObject call — retrieves both metadata and body in one
+        // round trip, replacing the previous HeadObject+GetObject pattern.
+        let get = match self
             .client
-            .head_object()
+            .get_object()
             .bucket(&self.bucket)
             .key(&key)
             .send()
             .await
-            .ok()?;
+        {
+            Ok(output) => output,
+            Err(err) => {
+                // NoSuchKey is a normal cache miss — return None silently.
+                let is_no_such_key = err
+                    .as_service_error()
+                    .map_or(false, |e| e.is_no_such_key());
+                if !is_no_such_key {
+                    tracing::warn!(
+                        bucket = %self.bucket,
+                        key = %key,
+                        error = %err,
+                        "S3 GetObject failed"
+                    );
+                }
+                return None;
+            }
+        };
 
-        let metadata = head.metadata()?;
+        // Extract stored-at and ttl-secs from the object's user metadata.
+        let metadata = get.metadata()?;
 
         let stored_at_str = metadata.get("stored-at")?;
         let stored_at = DateTime::parse_from_rfc3339(stored_at_str)
@@ -138,33 +157,14 @@ impl CacheStore for S3CacheStore {
 
         let ttl_secs: u64 = metadata.get("ttl-secs")?.parse().ok()?;
 
-        // Build a temporary entry to check freshness without downloading.
-        let probe = CacheEntry {
-            data: Vec::new(),
-            stored_at,
-            ttl_secs,
-        };
-
-        // Even if stale, we still return the entry — the caller decides
-        // whether to use stale data as a fallback.
-
-        // GetObject to retrieve the compressed body.
-        let get = self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-            .ok()?;
-
+        // Download and decompress the body.
         let compressed = get.body.collect().await.ok()?.to_vec();
         let data = gzip_decompress(&compressed).ok()?;
 
         Some(CacheEntry {
             data,
-            stored_at: probe.stored_at,
-            ttl_secs: probe.ttl_secs,
+            stored_at,
+            ttl_secs,
         })
     }
 

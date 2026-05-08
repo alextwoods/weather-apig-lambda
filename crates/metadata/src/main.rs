@@ -1,13 +1,33 @@
+use std::io::{Read, Write};
 use std::sync::Arc;
 
+use aws_sdk_dynamodb::primitives::Blob;
+use aws_sdk_dynamodb::types::AttributeValue;
+use chrono::{DateTime, Utc};
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use forecast::metrics::{emit_metadata_cache_metric, MetadataCacheOutcome};
 use lambda_http::{run, service_fn, Body, Error, Request, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::task::JoinSet;
+use tracing::{info, warn};
 
-/// Shared HTTP client, created once per Lambda cold start.
+/// TTL for the models metadata cache (30 minutes).
+const MODELS_METADATA_TTL_SECS: u64 = 1800;
+
+/// Fixed cache key for models metadata.
+const MODELS_METADATA_CACHE_KEY: &str = "models_metadata";
+
+/// Fixed source key for models metadata.
+const MODELS_METADATA_SOURCE: &str = "metadata";
+
+/// Shared state, created once per Lambda cold start.
 struct AppState {
     http_client: reqwest::Client,
+    ddb_client: aws_sdk_dynamodb::Client,
+    cache_table: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -25,39 +45,39 @@ struct ModelEndpoint {
 const MODEL_ENDPOINTS: [ModelEndpoint; 9] = [
     ModelEndpoint {
         key: "ecmwf_ifs025",
-        url: "https://ensemble-api.open-meteo.com/v1/ensemble?latitude=0&longitude=0&models=ecmwf_ifs025_ensemble&hourly=temperature_2m&forecast_days=1",
+        url: "https://ensemble-api.open-meteo.com/data/ecmwf_ifs025_ensemble/static/meta.json",
     },
     ModelEndpoint {
         key: "gfs_gefs",
-        url: "https://ensemble-api.open-meteo.com/v1/ensemble?latitude=0&longitude=0&models=ncep_gefs_seamless&hourly=temperature_2m&forecast_days=1",
+        url: "https://ensemble-api.open-meteo.com/data/ncep_gefs025/static/meta.json",
     },
     ModelEndpoint {
         key: "icon",
-        url: "https://ensemble-api.open-meteo.com/v1/ensemble?latitude=0&longitude=0&models=icon_seamless_eps&hourly=temperature_2m&forecast_days=1",
+        url: "https://ensemble-api.open-meteo.com/data/icon_seamless_eps/static/meta.json",
     },
     ModelEndpoint {
         key: "gem",
-        url: "https://ensemble-api.open-meteo.com/v1/ensemble?latitude=0&longitude=0&models=gem_global_ensemble&hourly=temperature_2m&forecast_days=1",
+        url: "https://ensemble-api.open-meteo.com/data/cmc_gem_geps/static/meta.json",
     },
     ModelEndpoint {
         key: "bom_access",
-        url: "https://ensemble-api.open-meteo.com/v1/ensemble?latitude=0&longitude=0&models=bom_access_global_ensemble&hourly=temperature_2m&forecast_days=1",
+        url: "https://ensemble-api.open-meteo.com/data/bom_access_global_ensemble/static/meta.json",
     },
     ModelEndpoint {
         key: "hrrr",
-        url: "https://api.open-meteo.com/v1/gfs?latitude=0&longitude=0&hourly=temperature_2m&forecast_days=1",
+        url: "https://api.open-meteo.com/data/ncep_hrrr_conus/static/meta.json",
     },
     ModelEndpoint {
         key: "marine",
-        url: "https://marine-api.open-meteo.com/v1/marine?latitude=0&longitude=0&hourly=wave_height&forecast_days=1",
+        url: "https://marine-api.open-meteo.com/data/ecmwf_wam025/static/meta.json",
     },
     ModelEndpoint {
         key: "air_quality",
-        url: "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=0&longitude=0&hourly=us_aqi&forecast_days=1",
+        url: "https://air-quality-api.open-meteo.com/data/cams_global/static/meta.json",
     },
     ModelEndpoint {
         key: "uv_gfs",
-        url: "https://api.open-meteo.com/v1/forecast?latitude=0&longitude=0&hourly=uv_index&forecast_days=1",
+        url: "https://api.open-meteo.com/data/ncep_gfs025/static/meta.json",
     },
 ];
 
@@ -75,6 +95,14 @@ struct ModelMetadata {
 // ---------------------------------------------------------------------------
 // Metadata extraction
 // ---------------------------------------------------------------------------
+
+/// Convert a Unix timestamp (integer seconds) from the JSON response to an ISO 8601 string.
+fn unix_timestamp_to_iso(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(|v| v.as_i64())
+        .and_then(|ts| DateTime::from_timestamp(ts, 0))
+        .map(|dt: DateTime<Utc>| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
 
 /// Fetch a single model endpoint and extract metadata fields from the response.
 async fn fetch_model_metadata(
@@ -97,18 +125,122 @@ async fn fetch_model_metadata(
         .map_err(|e| format!("failed to parse JSON: {}", e))?;
 
     Ok(ModelMetadata {
-        last_run_initialisation_time: body
-            .get("last_run_initialisation_time")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        last_run_availability_time: body
-            .get("last_run_availability_time")
-            .and_then(|v| v.as_str())
-            .map(String::from),
+        last_run_initialisation_time: unix_timestamp_to_iso(
+            body.get("last_run_initialisation_time"),
+        ),
+        last_run_availability_time: unix_timestamp_to_iso(
+            body.get("last_run_availability_time"),
+        ),
         update_interval_seconds: body
             .get("update_interval_seconds")
             .and_then(|v| v.as_f64()),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Cache helpers
+// ---------------------------------------------------------------------------
+
+/// Checks the DynamoDB metadata cache for a fresh entry.
+///
+/// Returns the cached JSON string if fresh, None otherwise.
+async fn check_metadata_cache(state: &AppState) -> Option<String> {
+    if state.cache_table.is_empty() {
+        return None;
+    }
+
+    let result = state
+        .ddb_client
+        .get_item()
+        .table_name(&state.cache_table)
+        .key(
+            "cache_key",
+            AttributeValue::S(MODELS_METADATA_CACHE_KEY.to_string()),
+        )
+        .key(
+            "source",
+            AttributeValue::S(MODELS_METADATA_SOURCE.to_string()),
+        )
+        .send()
+        .await;
+
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "Failed to read metadata cache from DynamoDB");
+            return None;
+        }
+    };
+
+    let item = result.item()?;
+
+    // Check freshness
+    let stored_at_str = item.get("stored_at")?.as_s().ok()?;
+    let stored_at = DateTime::parse_from_rfc3339(stored_at_str)
+        .ok()?
+        .with_timezone(&Utc);
+    let elapsed = Utc::now().signed_duration_since(stored_at).num_seconds();
+    if elapsed < 0 || (elapsed as u64) >= MODELS_METADATA_TTL_SECS {
+        return None;
+    }
+
+    // Decompress data
+    let compressed = item.get("data")?.as_b().ok()?.as_ref().to_vec();
+    let mut decoder = GzDecoder::new(&compressed[..]);
+    let mut json_str = String::new();
+    if let Err(e) = decoder.read_to_string(&mut json_str) {
+        warn!(error = %e, "Failed to decompress cached metadata");
+        return None;
+    }
+
+    Some(json_str)
+}
+
+/// Stores the metadata response in DynamoDB cache (gzip-compressed JSON).
+///
+/// Logs warnings on errors but never fails the request.
+async fn store_metadata_cache(state: &AppState, json_body: &str) {
+    if state.cache_table.is_empty() {
+        return;
+    }
+
+    let now = Utc::now();
+    let expires_at = now.timestamp() + MODELS_METADATA_TTL_SECS as i64;
+
+    // Gzip compress
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    if let Err(e) = encoder.write_all(json_body.as_bytes()) {
+        warn!(error = %e, "Failed to compress metadata for cache");
+        return;
+    }
+    let compressed = match encoder.finish() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "Failed to finish gzip compression for metadata cache");
+            return;
+        }
+    };
+
+    if let Err(e) = state
+        .ddb_client
+        .put_item()
+        .table_name(&state.cache_table)
+        .item(
+            "cache_key",
+            AttributeValue::S(MODELS_METADATA_CACHE_KEY.to_string()),
+        )
+        .item(
+            "source",
+            AttributeValue::S(MODELS_METADATA_SOURCE.to_string()),
+        )
+        .item("data", AttributeValue::B(Blob::new(compressed)))
+        .item("stored_at", AttributeValue::S(now.to_rfc3339()))
+        .item("expires_at", AttributeValue::N(expires_at.to_string()))
+        .send()
+        .await
+    {
+        warn!(error = %e, "Failed to store metadata in DynamoDB cache");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -117,10 +249,34 @@ async fn fetch_model_metadata(
 
 /// Metadata Lambda handler.
 ///
-/// Fetches metadata from all 9 Open-Meteo model endpoints concurrently and
-/// returns a JSON object keyed by model name. Individual failures produce
-/// `null` for that model without failing the entire response.
+/// Checks the DynamoDB cache first. On a cache hit, returns the cached response
+/// immediately. On a miss, fetches metadata from all 9 Open-Meteo model
+/// endpoints concurrently, stores the result in cache, and returns a JSON object
+/// keyed by model name. Individual fetch failures produce `null` for that model
+/// without failing the entire response.
 async fn handler(state: &AppState, _event: Request) -> Result<Response<Body>, Error> {
+    let handler_start = std::time::Instant::now();
+
+    // Check cache first
+    let cache_check_start = std::time::Instant::now();
+    if let Some(cached_json) = check_metadata_cache(state).await {
+        let cache_check_ms = cache_check_start.elapsed().as_millis();
+        info!(cache_check_ms = cache_check_ms, "Metadata cache hit, returning cached response");
+        emit_metadata_cache_metric(MetadataCacheOutcome::Hit);
+        let total_ms = handler_start.elapsed().as_millis();
+        info!(total_ms = total_ms, cache_check_ms = cache_check_ms, "Request complete (cache hit)");
+        return Ok(Response::builder()
+            .status(200)
+            .header("Content-Type", "application/json")
+            .body(Body::from(cached_json))
+            .map_err(Box::new)?);
+    }
+    let cache_check_ms = cache_check_start.elapsed().as_millis();
+    info!(cache_check_ms = cache_check_ms, "Metadata cache miss");
+
+    // Cache miss — fetch from all 9 endpoints
+    emit_metadata_cache_metric(MetadataCacheOutcome::Miss);
+    let fetch_start = std::time::Instant::now();
     let mut join_set = JoinSet::new();
 
     for endpoint in &MODEL_ENDPOINTS {
@@ -129,8 +285,10 @@ async fn handler(state: &AppState, _event: Request) -> Result<Response<Body>, Er
         let key = endpoint.key.to_string();
 
         join_set.spawn(async move {
+            let start = std::time::Instant::now();
             let result = fetch_model_metadata(&client, &url).await;
-            (key, result)
+            let elapsed_ms = start.elapsed().as_millis();
+            (key, result, elapsed_ms)
         });
     }
 
@@ -138,14 +296,15 @@ async fn handler(state: &AppState, _event: Request) -> Result<Response<Body>, Er
 
     while let Some(result) = join_set.join_next().await {
         match result {
-            Ok((key, Ok(metadata))) => {
+            Ok((key, Ok(metadata), elapsed_ms)) => {
+                info!(source = %key, elapsed_ms = elapsed_ms, "Model metadata fetched");
                 models.insert(
                     key,
                     serde_json::to_value(metadata).unwrap_or(Value::Null),
                 );
             }
-            Ok((key, Err(_))) => {
-                // Individual model failure → null
+            Ok((key, Err(e), elapsed_ms)) => {
+                warn!(source = %key, elapsed_ms = elapsed_ms, error = %e, "Model metadata fetch failed");
                 models.insert(key, Value::Null);
             }
             Err(_join_err) => {
@@ -153,23 +312,52 @@ async fn handler(state: &AppState, _event: Request) -> Result<Response<Body>, Er
             }
         }
     }
+    let fetch_ms = fetch_start.elapsed().as_millis();
 
     let response_body = serde_json::json!({ "models": models });
+    let json_str = response_body.to_string();
+
+    // Store in cache (fire-and-forget style — log errors but don't fail)
+    store_metadata_cache(state, &json_str).await;
+
+    let total_ms = handler_start.elapsed().as_millis();
+    info!(
+        total_ms = total_ms,
+        cache_check_ms = cache_check_ms,
+        fetch_ms = fetch_ms,
+        models_fetched = models.len(),
+        "Request complete (cache miss)"
+    );
 
     Ok(Response::builder()
         .status(200)
         .header("Content-Type", "application/json")
-        .body(Body::from(response_body.to_string()))
+        .body(Body::from(json_str))
         .map_err(Box::new)?)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_target(false)
+        .with_ansi(false)
+        .without_time()
+        .init();
+
+    let cache_table =
+        std::env::var("CACHE_TABLE").unwrap_or_else(|_| String::new());
+
+    let aws_config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+    let ddb_client = aws_sdk_dynamodb::Client::new(&aws_config);
+
     let state = Arc::new(AppState {
         http_client: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .expect("failed to build HTTP client"),
+        ddb_client,
+        cache_table,
     });
 
     run(service_fn(move |event: Request| {
@@ -324,7 +512,7 @@ mod tests {
     }
 
     /// Verifies that all model endpoint URLs are valid HTTPS URLs pointing
-    /// to Open-Meteo API domains.
+    /// to Open-Meteo API domains and using the metadata JSON format.
     #[test]
     fn test_model_endpoint_urls_valid() {
         for endpoint in &MODEL_ENDPOINTS {
@@ -340,13 +528,57 @@ mod tests {
                 endpoint.key,
                 endpoint.url
             );
-            // Each URL should request at least one hourly variable
+            // Each URL should point to the static metadata JSON
             assert!(
-                endpoint.url.contains("hourly="),
-                "endpoint {} URL should request hourly data: {}",
+                endpoint.url.ends_with("/static/meta.json"),
+                "endpoint {} URL should be a metadata endpoint: {}",
                 endpoint.key,
                 endpoint.url
             );
         }
+    }
+
+    #[test]
+    fn test_unix_timestamp_to_iso_valid() {
+        // 1724796000 = Tue Aug 27, 2024, 22:00:00 UTC
+        let value = serde_json::json!(1724796000);
+        let result = unix_timestamp_to_iso(Some(&value));
+        assert_eq!(result, Some("2024-08-27T22:00:00Z".to_string()));
+    }
+
+    #[test]
+    fn test_unix_timestamp_to_iso_none() {
+        assert_eq!(unix_timestamp_to_iso(None), None);
+    }
+
+    #[test]
+    fn test_unix_timestamp_to_iso_non_integer() {
+        let value = serde_json::json!("not a number");
+        let result = unix_timestamp_to_iso(Some(&value));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_cache_constants() {
+        assert_eq!(MODELS_METADATA_TTL_SECS, 1800);
+        assert_eq!(MODELS_METADATA_CACHE_KEY, "models_metadata");
+        assert_eq!(MODELS_METADATA_SOURCE, "metadata");
+    }
+
+    #[test]
+    fn test_gzip_round_trip() {
+        let original = r#"{"models":{"ecmwf_ifs025":{"last_run_initialisation_time":"2026-04-24T00:00:00Z"}}}"#;
+
+        // Compress
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(original.as_bytes()).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        // Decompress
+        let mut decoder = GzDecoder::new(&compressed[..]);
+        let mut decompressed = String::new();
+        decoder.read_to_string(&mut decompressed).unwrap();
+
+        assert_eq!(original, decompressed);
     }
 }

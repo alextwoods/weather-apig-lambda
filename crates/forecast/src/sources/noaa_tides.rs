@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
@@ -33,7 +34,7 @@ pub fn build_tides_url(station_id: &str, begin_date: &str, end_date: &str) -> St
 
 /// Fetches and parses tide prediction data from the NOAA CO-OPS API.
 ///
-/// Tide predictions are NOT cacheable — they are always fetched fresh.
+/// Tide predictions are cached in DynamoDB with a 3600-second (1-hour) TTL.
 pub struct NoaaTidesFetcher;
 
 impl NoaaTidesFetcher {
@@ -42,7 +43,11 @@ impl NoaaTidesFetcher {
     }
 
     pub fn is_cacheable() -> bool {
-        false
+        true
+    }
+
+    pub fn ttl_secs() -> u64 {
+        3600
     }
 }
 
@@ -51,7 +56,7 @@ impl NoaaTidesFetcher {
 // ---------------------------------------------------------------------------
 
 /// A single tide prediction entry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidePrediction {
     /// Prediction time (e.g., "2026-04-24 00:00").
     pub time: String,
@@ -60,7 +65,7 @@ pub struct TidePrediction {
 }
 
 /// Parsed tide prediction data from the NOAA CO-OPS API.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidesData {
     /// NOAA station identifier (e.g., "9447130").
     pub station_id: String,
@@ -68,6 +73,20 @@ pub struct TidesData {
     pub station_name: String,
     /// Tide predictions sorted chronologically.
     pub predictions: Vec<TidePrediction>,
+}
+
+// ---------------------------------------------------------------------------
+// Serialization / deserialization
+// ---------------------------------------------------------------------------
+
+/// Serializes `TidesData` to JSON bytes for caching.
+pub fn serialize_tides(data: &TidesData) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(data)
+}
+
+/// Deserializes `TidesData` from JSON bytes (cache read).
+pub fn deserialize_tides(bytes: &[u8]) -> Result<TidesData, serde_json::Error> {
+    serde_json::from_slice(bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +198,8 @@ mod tests {
     #[test]
     fn test_source_metadata() {
         assert_eq!(NoaaTidesFetcher::source_id(), "noaa_tides");
-        assert!(!NoaaTidesFetcher::is_cacheable());
+        assert!(NoaaTidesFetcher::is_cacheable());
+        assert_eq!(NoaaTidesFetcher::ttl_secs(), 3600);
     }
 
     // -------------------------------------------------------------------
@@ -286,5 +306,53 @@ mod tests {
         assert_eq!(data.predictions.len(), 2);
         assert_eq!(data.predictions[0].time, "2026-04-24 00:00");
         assert_eq!(data.predictions[1].time, "2026-04-24 00:24");
+    }
+
+    // -------------------------------------------------------------------
+    // Serialization round-trip tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_serialize_deserialize_tides_round_trip() {
+        let original = TidesData {
+            station_id: "9447130".to_string(),
+            station_name: "Seattle".to_string(),
+            predictions: vec![
+                TidePrediction {
+                    time: "2026-04-24 00:00".to_string(),
+                    height_m: 1.234,
+                },
+                TidePrediction {
+                    time: "2026-04-24 06:00".to_string(),
+                    height_m: -0.312,
+                },
+            ],
+        };
+
+        let bytes = serialize_tides(&original).unwrap();
+        let restored = deserialize_tides(&bytes).unwrap();
+
+        assert_eq!(restored.station_id, original.station_id);
+        assert_eq!(restored.station_name, original.station_name);
+        assert_eq!(restored.predictions.len(), original.predictions.len());
+        for (a, b) in restored.predictions.iter().zip(&original.predictions) {
+            assert_eq!(a.time, b.time);
+            assert!((a.height_m - b.height_m).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_serialize_deserialize_tides_empty_predictions() {
+        let original = TidesData {
+            station_id: "9447130".to_string(),
+            station_name: "Seattle".to_string(),
+            predictions: vec![],
+        };
+
+        let bytes = serialize_tides(&original).unwrap();
+        let restored = deserialize_tides(&bytes).unwrap();
+
+        assert_eq!(restored.station_id, original.station_id);
+        assert!(restored.predictions.is_empty());
     }
 }

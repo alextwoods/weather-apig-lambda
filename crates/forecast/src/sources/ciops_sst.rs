@@ -5,8 +5,8 @@ use serde_json::Value;
 // CIOPS-Salish Sea WMS constants
 // ---------------------------------------------------------------------------
 
-/// WMS layer for CIOPS-Salish Sea sea water potential temperature at depth 0.
-const CIOPS_LAYER: &str = "CIOPS-SalishSea_2km_SeaWaterPotentialTemperature-Depth0";
+/// WMS layer for CIOPS-Salish Sea sea water potential temperature at 0.5m depth.
+const CIOPS_LAYER: &str = "CIOPS-SalishSea_500m_SeaWaterPotentialTemp_0.5m";
 
 /// Offset to subtract from Kelvin to get Celsius.
 const KELVIN_OFFSET: f64 = 273.15;
@@ -86,6 +86,7 @@ pub fn build_ciops_wms_url(lat: f64, lon: f64, time: &DateTime<Utc>) -> String {
          &VERSION=1.3.0\
          &REQUEST=GetFeatureInfo\
          &LAYERS={CIOPS_LAYER}\
+         &QUERY_LAYERS={CIOPS_LAYER}\
          &CRS=EPSG:4326\
          &BBOX={bbox_lat_min},{bbox_lon_min},{bbox_lat_max},{bbox_lon_max}\
          &WIDTH=3\
@@ -120,14 +121,16 @@ pub fn kelvin_to_celsius(kelvin: f64) -> f64 {
 ///   "features": [
 ///     {
 ///       "properties": {
-///         "CIOPS-SalishSea_2km_SeaWaterPotentialTemperature-Depth0": 283.15
+///         "value": 283.15
 ///       }
 ///     }
 ///   ]
 /// }
 /// ```
 ///
-/// Returns `None` if the response cannot be parsed or contains no data.
+/// The ECCC WMS service returns the temperature in the `"value"` property
+/// key (not the layer name). Returns `None` if the response cannot be
+/// parsed or contains no data.
 pub fn parse_ciops_feature_info(raw: &[u8]) -> Option<f64> {
     let root: Value = serde_json::from_slice(raw).ok()?;
 
@@ -135,7 +138,11 @@ pub fn parse_ciops_feature_info(raw: &[u8]) -> Option<f64> {
     let feature = features.first()?;
     let props = feature.get("properties")?.as_object()?;
 
-    let kelvin = props.get(CIOPS_LAYER)?.as_f64()?;
+    // The ECCC WMS service returns the value under the "value" key
+    let kelvin = props
+        .get("value")
+        .or_else(|| props.get(CIOPS_LAYER))
+        .and_then(|v| v.as_f64())?;
     Some(kelvin_to_celsius(kelvin))
 }
 
@@ -238,6 +245,7 @@ mod tests {
         assert!(url.contains("VERSION=1.3.0"));
         assert!(url.contains("REQUEST=GetFeatureInfo"));
         assert!(url.contains(&format!("LAYERS={CIOPS_LAYER}")));
+        assert!(url.contains(&format!("QUERY_LAYERS={CIOPS_LAYER}")));
         assert!(url.contains("CRS=EPSG:4326"));
         assert!(url.contains("WIDTH=3"));
         assert!(url.contains("HEIGHT=3"));
@@ -291,7 +299,7 @@ mod tests {
                 {
                     "type": "Feature",
                     "properties": {
-                        CIOPS_LAYER: kelvin
+                        "value": kelvin
                     },
                     "geometry": {
                         "type": "Point",
@@ -346,6 +354,31 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_ciops_feature_info_layer_name_key_fallback() {
+        // Test that the parser also accepts the layer name as the property key
+        // (fallback for older response formats)
+        let json = serde_json::json!({
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {
+                        CIOPS_LAYER: 283.15
+                    },
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [-123.5, 48.5]
+                    }
+                }
+            ]
+        });
+        let raw = serde_json::to_vec(&json).unwrap();
+        let celsius = parse_ciops_feature_info(&raw);
+        assert!(celsius.is_some());
+        assert!((celsius.unwrap() - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn test_parse_ciops_feature_info_null_value() {
         let json = serde_json::json!({
             "type": "FeatureCollection",
@@ -353,7 +386,7 @@ mod tests {
                 {
                     "type": "Feature",
                     "properties": {
-                        CIOPS_LAYER: null
+                        "value": null
                     }
                 }
             ]

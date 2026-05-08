@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, NaiveDateTime, Utc};
-use serde::Serialize;
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::compute::aggregation::{compute_daily_sections, DailySection};
 use crate::compute::astronomy::{moon_altitude, sun_altitude};
@@ -9,7 +10,7 @@ use crate::compute::percentile::{compute_percentiles, PercentileStats};
 use crate::compute::probability::{compute_precip_probability, PrecipProbability};
 use crate::fetcher::{AllSourceResults, CacheMeta, SourceResult};
 use crate::models::{FetchParams, WEATHER_VARIABLES};
-use crate::sources::ensemble::extract_members;
+use crate::sources::ensemble::{extract_members, ParsedEnsembleData};
 
 // ---------------------------------------------------------------------------
 // Response structs — serialized to JSON for the client
@@ -44,18 +45,17 @@ pub struct ForecastResponse {
 }
 
 /// Ensemble forecast section with percentile statistics, precipitation
-/// probability, daily aggregations, and per-model member arrays.
-#[derive(Debug, Serialize)]
+/// probability, and daily aggregations.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EnsembleResponse {
     pub times: Vec<String>,
     pub statistics: HashMap<String, PercentileStatsResponse>,
     pub precipitation_probability: PrecipProbabilityResponse,
     pub daily_sections: Vec<DailySectionResponse>,
-    pub members_by_model: HashMap<String, HashMap<String, Vec<Vec<Option<f64>>>>>,
 }
 
 /// Percentile statistics for a single weather variable.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PercentileStatsResponse {
     pub p10: Vec<Option<f64>>,
     pub p25: Vec<Option<f64>>,
@@ -77,7 +77,7 @@ impl From<PercentileStats> for PercentileStatsResponse {
 }
 
 /// Precipitation probability at three thresholds.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PrecipProbabilityResponse {
     pub any: Vec<Option<f64>>,
     pub moderate: Vec<Option<f64>>,
@@ -95,7 +95,7 @@ impl From<PrecipProbability> for PrecipProbabilityResponse {
 }
 
 /// Daily aggregation section.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DailySectionResponse {
     pub date: String,
     pub start_index: usize,
@@ -123,7 +123,7 @@ impl From<DailySection> for DailySectionResponse {
 }
 
 /// Marine forecast section.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MarineResponse {
     pub times: Vec<String>,
     pub wave_height: Vec<Option<f64>>,
@@ -133,7 +133,7 @@ pub struct MarineResponse {
 }
 
 /// HRRR (High-Resolution Rapid Refresh) forecast section.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HrrrResponse {
     pub times: Vec<String>,
     pub temperature_2m: Vec<Option<f64>>,
@@ -148,7 +148,7 @@ pub struct HrrrResponse {
 }
 
 /// UV index forecast section.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UvResponse {
     pub times: Vec<String>,
     pub uv_index: Vec<Option<f64>>,
@@ -156,7 +156,7 @@ pub struct UvResponse {
 }
 
 /// Air quality forecast section.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AirQualityResponse {
     pub times: Vec<String>,
     pub us_aqi: Vec<Option<f64>>,
@@ -165,20 +165,17 @@ pub struct AirQualityResponse {
 }
 
 /// Station metadata included in observation and tide responses.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StationResponse {
     pub id: String,
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub latitude: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub longitude: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub distance_km: Option<f64>,
 }
 
 /// Observation entry in the response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ObservationEntryResponse {
     pub timestamp: String,
     pub temperature_celsius: Option<f64>,
@@ -188,28 +185,28 @@ pub struct ObservationEntryResponse {
 }
 
 /// NWS observations section.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ObservationsResponse {
     pub station: StationResponse,
     pub entries: Vec<ObservationEntryResponse>,
 }
 
 /// Tide prediction entry in the response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TidePredictionResponse {
     pub time: String,
     pub height_m: f64,
 }
 
 /// NOAA tide predictions section.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TidesResponse {
     pub station: StationResponse,
     pub predictions: Vec<TidePredictionResponse>,
 }
 
 /// NOAA water temperature section.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WaterTemperatureResponse {
     pub station: StationResponse,
     pub temperature_celsius: Option<f64>,
@@ -217,23 +214,33 @@ pub struct WaterTemperatureResponse {
 }
 
 /// ECCC CIOPS Salish Sea SST section.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CiopsSstResponse {
     pub times: Vec<String>,
     pub temperatures_celsius: Vec<Option<f64>>,
 }
 
 /// Sun and moon altitude section.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AstronomyResponse {
     pub times: Vec<String>,
     pub sun_altitude: Vec<f64>,
     pub moon_altitude: Vec<f64>,
 }
 
+/// Response from `GET /forecast/members` containing raw ensemble member data
+/// for a single weather variable, grouped by model, with percentile statistics.
+#[derive(Debug, Serialize)]
+pub struct MembersResponse {
+    pub times: Vec<String>,
+    pub variable: String,
+    pub members_by_model: HashMap<String, Vec<Vec<Option<f64>>>>,
+    pub statistics: PercentileStatsResponse,
+}
+
 /// Cache metadata for a single source, included in the response so clients
 /// can display data freshness information.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CacheMetadata {
     pub age_seconds: u64,
     pub is_fresh: bool,
@@ -261,6 +268,43 @@ fn parse_time(s: &str) -> Option<DateTime<Utc>> {
     NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M")
         .ok()
         .map(|ndt| ndt.and_utc())
+}
+
+// ---------------------------------------------------------------------------
+// Helper: compute the truncation cutoff for a given forecast horizon
+// ---------------------------------------------------------------------------
+
+/// Computes the number of time steps to keep for a given forecast horizon.
+///
+/// The cutoff is `min(times_len, 12 + forecast_days * 24)` — 12 past hours
+/// plus the requested number of forecast days in hourly steps. If the data
+/// has fewer time steps than the computed cutoff, the full data is kept.
+fn truncate_to_horizon(times_len: usize, forecast_days: u32) -> usize {
+    let cutoff = 12 + (forecast_days as usize) * 24;
+    times_len.min(cutoff)
+}
+
+/// Truncates a `Vec<T>` to at most `len` elements.
+fn truncate_vec<T: Clone>(v: &[T], len: usize) -> Vec<T> {
+    v[..v.len().min(len)].to_vec()
+}
+
+/// Finds the cutoff index for a secondary source (HRRR, UV, air quality,
+/// marine, CIOPS SST) based on the ensemble's last retained time.
+///
+/// Scans the secondary source's times array and returns the index of the
+/// first entry that is strictly after `cutoff_time`, or the full length if
+/// all entries are within range. This ensures secondary sources don't extend
+/// beyond the ensemble's truncated horizon.
+fn secondary_cutoff(times: &[String], cutoff_time: &DateTime<Utc>) -> usize {
+    times
+        .iter()
+        .position(|t| {
+            parse_time(t)
+                .map(|dt| dt > *cutoff_time)
+                .unwrap_or(false)
+        })
+        .unwrap_or(times.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -295,60 +339,125 @@ fn extract_error<T>(result: &SourceResult<T>) -> Option<String> {
 /// 7. Includes cache metadata and per-source error messages
 pub fn build_response(results: AllSourceResults, params: &FetchParams) -> ForecastResponse {
     // -------------------------------------------------------------------
-    // Ensemble processing
+    // Compute the ensemble truncation cutoff based on forecast_days.
+    // This is applied BEFORE computing statistics to save computation.
     // -------------------------------------------------------------------
+    let ensemble_cutoff = results.ensemble.data().map(|data| {
+        truncate_to_horizon(data.times.len(), params.forecast_days)
+    });
+
+    // The last ensemble time after truncation, used to truncate secondary
+    // sources (HRRR, UV, air quality, marine, CIOPS SST) so they don't
+    // extend beyond the ensemble's horizon.
+    let ensemble_cutoff_time: Option<DateTime<Utc>> = results
+        .ensemble
+        .data()
+        .and_then(|data| {
+            let cutoff = truncate_to_horizon(data.times.len(), params.forecast_days);
+            if cutoff > 0 {
+                data.times.get(cutoff - 1).and_then(|t| parse_time(t))
+            } else {
+                None
+            }
+        });
+
+    // -------------------------------------------------------------------
+    // Ensemble processing + concurrent astronomy computation
+    // -------------------------------------------------------------------
+
+    // If ensemble data is available, kick off the astronomy computation on
+    // a separate thread *before* computing statistics. The astronomy work
+    // (trig for every time step) is independent of the statistics and can
+    // run concurrently using Rayon's par_iter inside the spawned thread.
+    // Truncation is applied to the times before spawning the thread.
+    let astronomy_handle = results.ensemble.data().map(|data| {
+        let cutoff = ensemble_cutoff.unwrap_or(data.times.len());
+        let times = truncate_vec(&data.times, cutoff);
+        let lat = params.lat;
+        let lon = params.lon;
+
+        std::thread::spawn(move || {
+            let results: Vec<(f64, f64)> = times
+                .par_iter()
+                .map(|time_str| {
+                    if let Some(dt) = parse_time(time_str) {
+                        (sun_altitude(dt, lat, lon), moon_altitude(dt, lat, lon))
+                    } else {
+                        (0.0, 0.0)
+                    }
+                })
+                .collect();
+
+            let (sun_alts, moon_alts): (Vec<f64>, Vec<f64>) = results.into_iter().unzip();
+
+            AstronomyResponse {
+                times,
+                sun_altitude: sun_alts,
+                moon_altitude: moon_alts,
+            }
+        })
+    });
+
     let ensemble = results.ensemble.data().map(|data| {
-        let time_step_count = data.times.len();
+        // Truncate ensemble data to the requested forecast horizon BEFORE
+        // computing statistics. This saves computation proportional to the
+        // reduction in time steps (e.g. 10 days vs 35 days = ~70% less).
+        let cutoff = ensemble_cutoff.unwrap_or(data.times.len());
+        let truncated_times = truncate_vec(&data.times, cutoff);
+        let time_step_count = truncated_times.len();
 
-        // Extract members and compute statistics for each weather variable
+        // Truncate member arrays before extraction by truncating the
+        // underlying hourly HashMap values.
+        let truncated_hourly: HashMap<String, Vec<Option<f64>>> = data
+            .hourly
+            .iter()
+            .map(|(k, v)| (k.clone(), truncate_vec(v, cutoff)))
+            .collect();
+
+        // Parallel extraction and percentile computation across all 11 weather
+        // variables using Rayon. Each variable is independent so this is safe
+        // to parallelise.
+        let stats_vec: Vec<(String, PercentileStatsResponse, Vec<Option<f64>>, Vec<Vec<Option<f64>>>)> =
+            WEATHER_VARIABLES
+                .par_iter()
+                .map(|variable| {
+                    let extracted = extract_members(&truncated_hourly, variable);
+                    let stats = compute_percentiles(&extracted.pooled, time_step_count);
+                    let median = stats.median.clone();
+                    let pooled = extracted.pooled;
+                    (variable.to_string(), PercentileStatsResponse::from(stats), median, pooled)
+                })
+                .collect();
+
+        // Build the statistics HashMap and extract the precipitation members
+        // and median arrays needed for probability and daily section computation.
         let mut statistics: HashMap<String, PercentileStatsResponse> = HashMap::new();
-        let mut members_by_model: HashMap<String, HashMap<String, Vec<Vec<Option<f64>>>>> =
-            HashMap::new();
-
-        // We need the precipitation members for probability computation
         let mut precip_pooled: Vec<Vec<Option<f64>>> = Vec::new();
-
-        // We need median arrays for daily section computation
         let mut median_temp: Vec<Option<f64>> = Vec::new();
         let mut median_precip: Vec<Option<f64>> = Vec::new();
         let mut median_wind_speed: Vec<Option<f64>> = Vec::new();
         let mut median_wind_direction: Vec<Option<f64>> = Vec::new();
 
-        for variable in &WEATHER_VARIABLES {
-            let extracted = extract_members(&data.hourly, variable);
-
-            // Compute percentile stats from pooled members
-            let stats = compute_percentiles(&extracted.pooled, time_step_count);
-
-            // Capture median arrays for daily aggregation
-            match *variable {
-                "temperature_2m" => median_temp = stats.median.clone(),
+        for (variable_name, stats_response, median, pooled) in stats_vec {
+            match variable_name.as_str() {
+                "temperature_2m" => median_temp = median,
                 "precipitation" => {
-                    median_precip = stats.median.clone();
-                    precip_pooled = extracted.pooled.clone();
+                    median_precip = median;
+                    precip_pooled = pooled;
                 }
-                "wind_speed_10m" => median_wind_speed = stats.median.clone(),
-                "wind_direction_10m" => median_wind_direction = stats.median.clone(),
+                "wind_speed_10m" => median_wind_speed = median,
+                "wind_direction_10m" => median_wind_direction = median,
                 _ => {}
             }
-
-            statistics.insert(variable.to_string(), PercentileStatsResponse::from(stats));
-
-            // Collect per-model member arrays
-            for (model_suffix, model_members) in &extracted.by_model {
-                members_by_model
-                    .entry(model_suffix.clone())
-                    .or_default()
-                    .insert(variable.to_string(), model_members.clone());
-            }
+            statistics.insert(variable_name, stats_response);
         }
 
-        // Compute precipitation probability
+        // Compute precipitation probability from truncated members
         let precip_prob = compute_precip_probability(&precip_pooled, time_step_count);
 
-        // Compute daily sections from median arrays
+        // Compute daily sections from truncated median arrays
         let daily_sections = compute_daily_sections(
-            &data.times,
+            &truncated_times,
             &median_temp,
             &median_precip,
             &median_wind_speed,
@@ -356,83 +465,84 @@ pub fn build_response(results: AllSourceResults, params: &FetchParams) -> Foreca
         );
 
         EnsembleResponse {
-            times: data.times.clone(),
+            times: truncated_times,
             statistics,
             precipitation_probability: PrecipProbabilityResponse::from(precip_prob),
             daily_sections: daily_sections.into_iter().map(DailySectionResponse::from).collect(),
-            members_by_model,
         }
     });
 
     // -------------------------------------------------------------------
-    // Astronomy — compute sun/moon altitude for each ensemble time step
+    // Astronomy — join the concurrent computation started above
     // -------------------------------------------------------------------
-    let astronomy = ensemble.as_ref().map(|ens| {
-        let mut sun_alts = Vec::with_capacity(ens.times.len());
-        let mut moon_alts = Vec::with_capacity(ens.times.len());
+    let astronomy = astronomy_handle.map(|handle| {
+        handle.join().expect("astronomy thread panicked")
+    });
 
-        for time_str in &ens.times {
-            if let Some(dt) = parse_time(time_str) {
-                sun_alts.push(sun_altitude(dt, params.lat, params.lon));
-                moon_alts.push(moon_altitude(dt, params.lat, params.lon));
-            } else {
-                // If we can't parse the time, use 0.0 as a fallback
-                sun_alts.push(0.0);
-                moon_alts.push(0.0);
-            }
-        }
-
-        AstronomyResponse {
-            times: ens.times.clone(),
-            sun_altitude: sun_alts,
-            moon_altitude: moon_alts,
+    // -------------------------------------------------------------------
+    // Marine — truncate to ensemble cutoff time
+    // -------------------------------------------------------------------
+    let marine = results.marine.data().map(|data| {
+        let cutoff = ensemble_cutoff_time
+            .map(|ct| secondary_cutoff(&data.times, &ct))
+            .unwrap_or(data.times.len());
+        MarineResponse {
+            times: truncate_vec(&data.times, cutoff),
+            wave_height: truncate_vec(&data.wave_height, cutoff),
+            wave_period: truncate_vec(&data.wave_period, cutoff),
+            wave_direction: truncate_vec(&data.wave_direction, cutoff),
+            sea_surface_temperature: truncate_vec(&data.sea_surface_temperature, cutoff),
         }
     });
 
     // -------------------------------------------------------------------
-    // Marine
+    // HRRR — truncate to ensemble cutoff time
     // -------------------------------------------------------------------
-    let marine = results.marine.data().map(|data| MarineResponse {
-        times: data.times.clone(),
-        wave_height: data.wave_height.clone(),
-        wave_period: data.wave_period.clone(),
-        wave_direction: data.wave_direction.clone(),
-        sea_surface_temperature: data.sea_surface_temperature.clone(),
+    let hrrr = results.hrrr.data().map(|data| {
+        let cutoff = ensemble_cutoff_time
+            .map(|ct| secondary_cutoff(&data.times, &ct))
+            .unwrap_or(data.times.len());
+        HrrrResponse {
+            times: truncate_vec(&data.times, cutoff),
+            temperature_2m: truncate_vec(&data.temperature_2m, cutoff),
+            apparent_temperature: truncate_vec(&data.apparent_temperature, cutoff),
+            dew_point_2m: truncate_vec(&data.dew_point_2m, cutoff),
+            wind_speed_10m: truncate_vec(&data.wind_speed_10m, cutoff),
+            wind_gusts_10m: truncate_vec(&data.wind_gusts_10m, cutoff),
+            wind_direction_10m: truncate_vec(&data.wind_direction_10m, cutoff),
+            surface_pressure: truncate_vec(&data.surface_pressure, cutoff),
+            precipitation: truncate_vec(&data.precipitation, cutoff),
+            precipitation_probability: truncate_vec(&data.precipitation_probability, cutoff),
+        }
     });
 
     // -------------------------------------------------------------------
-    // HRRR
+    // UV — truncate to ensemble cutoff time
     // -------------------------------------------------------------------
-    let hrrr = results.hrrr.data().map(|data| HrrrResponse {
-        times: data.times.clone(),
-        temperature_2m: data.temperature_2m.clone(),
-        apparent_temperature: data.apparent_temperature.clone(),
-        dew_point_2m: data.dew_point_2m.clone(),
-        wind_speed_10m: data.wind_speed_10m.clone(),
-        wind_gusts_10m: data.wind_gusts_10m.clone(),
-        wind_direction_10m: data.wind_direction_10m.clone(),
-        surface_pressure: data.surface_pressure.clone(),
-        precipitation: data.precipitation.clone(),
-        precipitation_probability: data.precipitation_probability.clone(),
+    let uv = results.uv.data().map(|data| {
+        let cutoff = ensemble_cutoff_time
+            .map(|ct| secondary_cutoff(&data.times, &ct))
+            .unwrap_or(data.times.len());
+        UvResponse {
+            times: truncate_vec(&data.times, cutoff),
+            uv_index: truncate_vec(&data.uv_index, cutoff),
+            uv_index_clear_sky: truncate_vec(&data.uv_index_clear_sky, cutoff),
+        }
     });
 
     // -------------------------------------------------------------------
-    // UV
+    // Air quality — truncate to ensemble cutoff time
     // -------------------------------------------------------------------
-    let uv = results.uv.data().map(|data| UvResponse {
-        times: data.times.clone(),
-        uv_index: data.uv_index.clone(),
-        uv_index_clear_sky: data.uv_index_clear_sky.clone(),
-    });
-
-    // -------------------------------------------------------------------
-    // Air quality
-    // -------------------------------------------------------------------
-    let air_quality = results.air_quality.data().map(|data| AirQualityResponse {
-        times: data.times.clone(),
-        us_aqi: data.us_aqi.clone(),
-        pm2_5: data.pm2_5.clone(),
-        pm10: data.pm10.clone(),
+    let air_quality = results.air_quality.data().map(|data| {
+        let cutoff = ensemble_cutoff_time
+            .map(|ct| secondary_cutoff(&data.times, &ct))
+            .unwrap_or(data.times.len());
+        AirQualityResponse {
+            times: truncate_vec(&data.times, cutoff),
+            us_aqi: truncate_vec(&data.us_aqi, cutoff),
+            pm2_5: truncate_vec(&data.pm2_5, cutoff),
+            pm10: truncate_vec(&data.pm10, cutoff),
+        }
     });
 
     // -------------------------------------------------------------------
@@ -498,11 +608,28 @@ pub fn build_response(results: AllSourceResults, params: &FetchParams) -> Foreca
     });
 
     // -------------------------------------------------------------------
-    // CIOPS SST
+    // CIOPS SST — truncate to ensemble cutoff time
     // -------------------------------------------------------------------
-    let ciops_sst = results.ciops_sst.data().map(|data| CiopsSstResponse {
-        times: data.times.clone(),
-        temperatures_celsius: data.temperatures_celsius.clone(),
+    let ciops_sst = results.ciops_sst.data().map(|data| {
+        // CIOPS times use a different format (ISO 8601 with timezone offset),
+        // so we parse with the standard DateTime parser rather than parse_time.
+        let cutoff = ensemble_cutoff_time
+            .map(|ct| {
+                data.times
+                    .iter()
+                    .position(|t| {
+                        DateTime::parse_from_rfc3339(t)
+                            .or_else(|_| DateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S%:z"))
+                            .map(|dt| dt.with_timezone(&Utc) > ct)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(data.times.len())
+            })
+            .unwrap_or(data.times.len());
+        CiopsSstResponse {
+            times: truncate_vec(&data.times, cutoff),
+            temperatures_celsius: truncate_vec(&data.temperatures_celsius, cutoff),
+        }
     });
 
     // -------------------------------------------------------------------
@@ -559,6 +686,59 @@ pub fn build_response(results: AllSourceResults, params: &FetchParams) -> Foreca
 }
 
 // ---------------------------------------------------------------------------
+// build_members_response — assembles the /forecast/members JSON response
+// ---------------------------------------------------------------------------
+
+/// Assembles the members endpoint response for a single weather variable.
+///
+/// Extracts ensemble members for the given variable from the parsed data,
+/// filters to only the selected model suffixes, computes percentile statistics
+/// from the selected models' pooled members, and returns the response.
+pub fn build_members_response(
+    data: &ParsedEnsembleData,
+    variable: &str,
+    selected_model_suffixes: &[&str],
+    forecast_days: u32,
+) -> MembersResponse {
+    let extracted = extract_members(&data.hourly, variable);
+
+    // Truncate to the requested forecast horizon
+    let cutoff = truncate_to_horizon(data.times.len(), forecast_days);
+    let truncated_times = truncate_vec(&data.times, cutoff);
+    let time_step_count = truncated_times.len();
+
+    // Filter by_model to only include the selected model suffixes,
+    // and truncate each member array to the cutoff
+    let filtered_by_model: HashMap<String, Vec<Vec<Option<f64>>>> = extracted
+        .by_model
+        .into_iter()
+        .filter(|(suffix, _)| selected_model_suffixes.contains(&suffix.as_str()))
+        .map(|(suffix, members)| {
+            let truncated_members: Vec<Vec<Option<f64>>> = members
+                .into_iter()
+                .map(|m| truncate_vec(&m, cutoff))
+                .collect();
+            (suffix, truncated_members)
+        })
+        .collect();
+
+    // Pool members from only the selected models for percentile computation
+    let pooled: Vec<Vec<Option<f64>>> = filtered_by_model
+        .values()
+        .flat_map(|members| members.iter().cloned())
+        .collect();
+
+    let stats = compute_percentiles(&pooled, time_step_count);
+
+    MembersResponse {
+        times: truncated_times,
+        variable: variable.to_string(),
+        members_by_model: filtered_by_model,
+        statistics: PercentileStatsResponse::from(stats),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -584,6 +764,8 @@ mod tests {
             station_id: None,
             force_refresh: false,
             refresh_source: None,
+            models: None,
+            forecast_days: 10,
         }
     }
 
@@ -945,23 +1127,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_response_members_by_model() {
-        let ensemble_data = make_ensemble_data();
-        let mut results = all_skipped_results();
-        results.ensemble = SourceResult::Fresh(ensemble_data, fresh_cache_meta());
-
-        let params = default_params();
-        let response = build_response(results, &params);
-
-        let ens = response.ensemble.as_ref().unwrap();
-        // Our test data has members from "ecmwf" model
-        assert!(ens.members_by_model.contains_key("ecmwf"));
-        let ecmwf = &ens.members_by_model["ecmwf"];
-        assert!(ecmwf.contains_key("temperature_2m"));
-        assert_eq!(ecmwf["temperature_2m"].len(), 2); // 2 members
-    }
-
-    #[test]
     fn test_build_response_serializes_to_json() {
         let ensemble_data = make_ensemble_data();
         let mut results = all_skipped_results();
@@ -977,6 +1142,7 @@ mod tests {
         assert!(json.contains("\"temperature_2m\""));
         assert!(json.contains("\"cache\""));
         assert!(json.contains("\"errors\""));
+        assert!(!json.contains("\"members_by_model\""), "members_by_model should not be in forecast response");
     }
 
     #[test]
@@ -1124,7 +1290,6 @@ mod tests {
         assert!(ens.statistics.contains_key("precipitation"));
         assert_eq!(ens.precipitation_probability.any.len(), ens.times.len());
         assert!(!ens.daily_sections.is_empty(), "daily sections should not be empty");
-        assert!(!ens.members_by_model.is_empty(), "members_by_model should not be empty");
 
         // Astronomy should align with ensemble times
         let astro = response.astronomy.as_ref().unwrap();
@@ -1162,6 +1327,10 @@ mod tests {
         assert!(parsed.get("cache").is_some());
         assert!(parsed.get("errors").is_some());
         assert!(parsed.get("astronomy").is_some());
+
+        // members_by_model should not be in the ensemble response
+        let ens_json = parsed.get("ensemble").unwrap();
+        assert!(ens_json.get("members_by_model").is_none(), "members_by_model should not be in ensemble response");
     }
 
     /// Integration test: one source failing while others succeed.

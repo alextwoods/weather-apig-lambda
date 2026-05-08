@@ -1,18 +1,19 @@
-mod cache;
-mod compute;
-mod fetcher;
-mod models;
-mod response;
-mod router;
-mod sources;
-
 use std::sync::Arc;
 
+use forecast::models::{AppConfig, AppState};
+use forecast::router;
 use lambda_http::{run, service_fn, Error, Request};
-use models::{AppConfig, AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    // Initialize tracing for structured logging to CloudWatch
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_target(false)
+        .with_ansi(false) // Disable ANSI colors for CloudWatch
+        .without_time() // CloudWatch adds timestamps
+        .init();
+
     // Load AWS SDK config from environment (region, credentials, etc.)
     let aws_config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
 
@@ -23,6 +24,7 @@ async fn main() -> Result<(), Error> {
     // Read configuration from environment variables
     let cache_bucket = std::env::var("CACHE_BUCKET").unwrap_or_default();
     let cache_table = std::env::var("CACHE_TABLE").unwrap_or_default();
+    let tracker_table = std::env::var("LOCATION_TRACKER_TABLE").unwrap_or_default();
 
     // Create a shared reqwest::Client with connection pooling and default timeouts
     let http_client = reqwest::Client::builder()
@@ -38,6 +40,7 @@ async fn main() -> Result<(), Error> {
         config: AppConfig {
             cache_bucket,
             cache_table,
+            tracker_table,
             ..AppConfig::default()
         },
     });

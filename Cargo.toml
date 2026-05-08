@@ -5,4 +5,5 @@ members = [
     "crates/geocode",
     "crates/metadata",
     "crates/stations",
+    "crates/cache_warmer",
 ]

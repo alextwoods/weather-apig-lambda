@@ -73,6 +73,8 @@ pub struct AppConfig {
     pub cache_bucket: String,
     /// DynamoDB table name for smaller cached responses (HRRR, UV, air quality).
     pub cache_table: String,
+    /// DynamoDB table name for location access tracking.
+    pub tracker_table: String,
     /// Per-source HTTP timeout in seconds (default 15).
     pub default_timeout_secs: u64,
 }
@@ -82,6 +84,7 @@ impl Default for AppConfig {
         Self {
             cache_bucket: String::new(),
             cache_table: String::new(),
+            tracker_table: String::new(),
             default_timeout_secs: 15,
         }
     }
@@ -100,6 +103,9 @@ pub struct FetchParams {
     pub station_id: Option<String>,
     pub force_refresh: bool,
     pub refresh_source: Option<String>,
+    pub models: Option<Vec<String>>,
+    /// Number of forecast days to include in the response (1–35, default 10).
+    pub forecast_days: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +224,21 @@ pub fn nearest_puget_sound_station(lat: f64, lon: f64) -> Option<&'static NoaaSt
         .map(|(s, _)| s)
 }
 
+/// Returns all NOAA stations within 100 km of the given coordinates, sorted
+/// by distance (nearest first).
+///
+/// Used for water temperature fallback: if the nearest station doesn't offer
+/// water temperature data, the caller can try the next-nearest station.
+pub fn nearby_puget_sound_stations(lat: f64, lon: f64) -> Vec<&'static NoaaStation> {
+    let mut stations: Vec<(&NoaaStation, f64)> = PUGET_SOUND_STATIONS
+        .iter()
+        .map(|s| (s, haversine_km(lat, lon, s.lat, s.lon)))
+        .filter(|(_, d)| *d <= 100.0)
+        .collect();
+    stations.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    stations.into_iter().map(|(s, _)| s).collect()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -280,6 +301,24 @@ mod tests {
     }
 
     #[test]
+    fn test_nearby_stations_seattle() {
+        // Near Seattle — should return multiple stations sorted by distance
+        let stations = nearby_puget_sound_stations(47.6062, -122.3321);
+        assert!(!stations.is_empty());
+        // Seattle should be first (nearest)
+        assert_eq!(stations[0].id, "9447130");
+        // Should include Tacoma (within 100km)
+        assert!(stations.iter().any(|s| s.id == "9446484"));
+    }
+
+    #[test]
+    fn test_nearby_stations_far_away() {
+        // New York — no station within 100 km
+        let stations = nearby_puget_sound_stations(40.7128, -74.0060);
+        assert!(stations.is_empty());
+    }
+
+    #[test]
     fn test_nearest_station_far_away() {
         // New York — no station within 50 km
         let station = nearest_puget_sound_station(40.7128, -74.0060);
@@ -292,6 +331,7 @@ mod tests {
         assert_eq!(config.default_timeout_secs, 15);
         assert!(config.cache_bucket.is_empty());
         assert!(config.cache_table.is_empty());
+        assert!(config.tracker_table.is_empty());
     }
 
     /// Feature: weather-backend-api, Property 9: Nearest Puget Sound station selection

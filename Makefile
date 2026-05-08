@@ -1,7 +1,7 @@
 TARGET = aarch64-unknown-linux-musl
 RELEASE_DIR = target/$(TARGET)/release
 LAMBDA_DIR = target/lambda
-CRATES = forecast geocode metadata stations
+CRATES = forecast geocode metadata stations cache_warmer
 
 .PHONY: all build package test clean
 

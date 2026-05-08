@@ -167,4 +167,37 @@ describe('WeatherApigLambdaStack', () => {
             RetentionInDays: 7,
         });
     });
+
+    // --- API Key & Usage Plan ---
+
+    test('creates an API key', () => {
+        template.hasResourceProperties('AWS::ApiGateway::ApiKey', {
+            Name: 'weather-api-key',
+            Enabled: true,
+        });
+    });
+
+    test('creates a usage plan associated with the API stage', () => {
+        template.hasResourceProperties('AWS::ApiGateway::UsagePlan', {
+            ApiStages: Match.arrayWith([
+                Match.objectLike({
+                    ApiId: Match.anyValue(),
+                    Stage: Match.anyValue(),
+                }),
+            ]),
+        });
+    });
+
+    test('all GET methods require an API key', () => {
+        const methods = template.findResources('AWS::ApiGateway::Method');
+        const getMethods = Object.entries(methods).filter(
+            ([_, resource]) => resource.Properties.HttpMethod === 'GET'
+        );
+
+        expect(getMethods.length).toBeGreaterThanOrEqual(5); // forecast, geocode, metadata, observations, marine
+
+        for (const [logicalId, resource] of getMethods) {
+            expect(resource.Properties.ApiKeyRequired).toBe(true);
+        }
+    });
 });
