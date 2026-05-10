@@ -122,6 +122,7 @@ fn parse_lat_lon(event: &Request) -> Result<(f64, f64), Response<Body>> {
         Response::builder()
             .status(400)
             .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
             .body(Body::from(
                 r#"{"error":"Missing required parameter: lat"}"#,
             ))
@@ -132,6 +133,7 @@ fn parse_lat_lon(event: &Request) -> Result<(f64, f64), Response<Body>> {
         Response::builder()
             .status(400)
             .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
             .body(Body::from(
                 r#"{"error":"Missing required parameter: lon"}"#,
             ))
@@ -142,6 +144,7 @@ fn parse_lat_lon(event: &Request) -> Result<(f64, f64), Response<Body>> {
         Response::builder()
             .status(400)
             .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
             .body(Body::from(
                 r#"{"error":"Invalid latitude: must be a number between -90 and 90"}"#,
             ))
@@ -152,6 +155,7 @@ fn parse_lat_lon(event: &Request) -> Result<(f64, f64), Response<Body>> {
         Response::builder()
             .status(400)
             .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
             .body(Body::from(
                 r#"{"error":"Invalid longitude: must be a number between -180 and 180"}"#,
             ))
@@ -162,6 +166,7 @@ fn parse_lat_lon(event: &Request) -> Result<(f64, f64), Response<Body>> {
         return Err(Response::builder()
             .status(400)
             .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
             .body(Body::from(
                 r#"{"error":"Invalid latitude: must be between -90 and 90"}"#,
             ))
@@ -172,6 +177,7 @@ fn parse_lat_lon(event: &Request) -> Result<(f64, f64), Response<Body>> {
         return Err(Response::builder()
             .status(400)
             .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
             .body(Body::from(
                 r#"{"error":"Invalid longitude: must be between -180 and 180"}"#,
             ))
@@ -213,6 +219,7 @@ async fn handle_observations(
             return Ok(Response::builder()
                 .status(502)
                 .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
                 .body(Body::from(msg))
                 .map_err(Box::new)?);
         }
@@ -226,6 +233,7 @@ async fn handle_observations(
         return Ok(Response::builder()
             .status(502)
             .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
             .body(Body::from(msg))
             .map_err(Box::new)?);
     }
@@ -237,6 +245,7 @@ async fn handle_observations(
             return Ok(Response::builder()
                 .status(502)
                 .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
                 .body(Body::from(msg))
                 .map_err(Box::new)?);
         }
@@ -287,6 +296,7 @@ async fn handle_observations(
     Ok(Response::builder()
         .status(200)
         .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
         .body(Body::from(response_body.to_string()))
         .map_err(Box::new)?)
 }
@@ -307,6 +317,7 @@ fn handle_marine(
     Ok(Response::builder()
         .status(200)
         .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
         .body(Body::from(response_body.to_string()))
         .map_err(Box::new)?)
 }
@@ -342,6 +353,7 @@ async fn handler(state: &AppState, event: Request) -> Result<Response<Body>, Err
         _ => Ok(Response::builder()
             .status(404)
             .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
             .body(Body::from(r#"{"error":"Not found"}"#))
             .map_err(Box::new)?),
     }

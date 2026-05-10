@@ -33,6 +33,7 @@ async fn handler(state: &AppState, event: Request) -> Result<Response<Body>, Err
             return Ok(Response::builder()
                 .status(400)
                 .header("Content-Type", "application/json")
+                .header("Access-Control-Allow-Origin", "*")
                 .body(Body::from(
                     r#"{"error":"Missing required parameter: q"}"#,
                 ))
@@ -53,6 +54,7 @@ async fn handler(state: &AppState, event: Request) -> Result<Response<Body>, Err
             return Ok(Response::builder()
                 .status(502)
                 .header("Content-Type", "application/json")
+                .header("Access-Control-Allow-Origin", "*")
                 .body(Body::from(msg))
                 .map_err(Box::new)?);
         }
@@ -67,6 +69,7 @@ async fn handler(state: &AppState, event: Request) -> Result<Response<Body>, Err
         return Ok(Response::builder()
             .status(502)
             .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
             .body(Body::from(msg))
             .map_err(Box::new)?);
     }
@@ -81,6 +84,7 @@ async fn handler(state: &AppState, event: Request) -> Result<Response<Body>, Err
             return Ok(Response::builder()
                 .status(502)
                 .header("Content-Type", "application/json")
+                .header("Access-Control-Allow-Origin", "*")
                 .body(Body::from(msg))
                 .map_err(Box::new)?);
         }
@@ -99,6 +103,7 @@ async fn handler(state: &AppState, event: Request) -> Result<Response<Body>, Err
             return Ok(Response::builder()
                 .status(502)
                 .header("Content-Type", "application/json")
+                .header("Access-Control-Allow-Origin", "*")
                 .body(Body::from(msg))
                 .map_err(Box::new)?);
         }
@@ -114,6 +119,7 @@ async fn handler(state: &AppState, event: Request) -> Result<Response<Body>, Err
     Ok(Response::builder()
         .status(200)
         .header("Content-Type", "application/json")
+        .header("Access-Control-Allow-Origin", "*")
         .body(Body::from(response_body.to_string()))
         .map_err(Box::new)?)
 }

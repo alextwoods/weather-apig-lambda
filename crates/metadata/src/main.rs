@@ -268,6 +268,7 @@ async fn handler(state: &AppState, _event: Request) -> Result<Response<Body>, Er
         return Ok(Response::builder()
             .status(200)
             .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
             .body(Body::from(cached_json))
             .map_err(Box::new)?);
     }
@@ -332,6 +333,7 @@ async fn handler(state: &AppState, _event: Request) -> Result<Response<Body>, Er
     Ok(Response::builder()
         .status(200)
         .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
         .body(Body::from(json_str))
         .map_err(Box::new)?)
 }

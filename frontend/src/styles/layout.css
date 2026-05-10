@@ -1,0 +1,177 @@
+/* layout.css — Responsive grid and flex layout */
+
+/* App shell */
+.app {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+/* Header bar */
+.header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    background-color: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+    min-height: var(--tap-target-min);
+}
+
+/* Main content area: stacked by default (mobile-first) */
+.main {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+}
+
+/* Side navigation (panel list / controls) */
+.side-nav {
+    display: flex;
+    flex-direction: row;
+    gap: var(--space-xs);
+    padding: var(--space-sm) var(--space-md);
+    overflow-x: auto;
+    background-color: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+}
+
+.side-nav__item {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: var(--tap-target-min);
+    min-height: var(--tap-target-min);
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+    font-size: var(--font-sm);
+    color: var(--color-text-secondary);
+    background: none;
+    border: none;
+    transition: background-color var(--transition-fast),
+        color var(--transition-fast);
+}
+
+.side-nav__item:hover {
+    background-color: var(--color-surface-raised);
+    color: var(--color-text-primary);
+}
+
+.side-nav__item--active {
+    color: var(--color-accent);
+    background-color: var(--color-surface-raised);
+}
+
+/* Chart content area */
+.content {
+    flex: 1;
+    padding: var(--space-md);
+    overflow-y: auto;
+}
+
+/* Chart panels container: vertical stack on mobile */
+.panels {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+}
+
+/* Desktop layout: ≥768px — side nav + full-width charts */
+@media (min-width: 768px) {
+    .main {
+        flex-direction: row;
+    }
+
+    .side-nav {
+        flex-direction: column;
+        width: 200px;
+        min-width: 200px;
+        overflow-x: visible;
+        overflow-y: auto;
+        border-bottom: none;
+        border-right: 1px solid var(--color-border);
+        padding: var(--space-md) var(--space-sm);
+    }
+
+    .side-nav__item {
+        justify-content: flex-start;
+        width: 100%;
+    }
+
+    .content {
+        padding: var(--space-lg);
+    }
+}
+
+/* Wide desktop: ≥1280px — more breathing room */
+@media (min-width: 1280px) {
+    .content {
+        padding: var(--space-xl) var(--space-2xl);
+    }
+
+    .side-nav {
+        width: 220px;
+        min-width: 220px;
+    }
+}
+
+/* Header responsive adjustments */
+@media (max-width: 767px) {
+    .header {
+        flex-wrap: wrap;
+        padding: var(--space-xs) var(--space-sm);
+    }
+
+    .header__controls {
+        display: flex;
+        gap: var(--space-xs);
+        width: 100%;
+        overflow-x: auto;
+        padding: var(--space-xs) 0;
+    }
+}
+
+/* Toggle bar (model toggles, overlay toggles) */
+.toggle-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    flex-wrap: wrap;
+}
+
+.toggle-bar__button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: var(--tap-target-min);
+    min-height: var(--tap-target-min);
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background-color: var(--color-surface);
+    color: var(--color-text-secondary);
+    font-size: var(--font-sm);
+    transition: background-color var(--transition-fast),
+        border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.toggle-bar__button:hover {
+    border-color: var(--color-accent);
+    color: var(--color-text-primary);
+}
+
+.toggle-bar__button--active {
+    background-color: var(--color-accent);
+    border-color: var(--color-accent);
+    color: #fff;
+}
+
+.toggle-bar__button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}

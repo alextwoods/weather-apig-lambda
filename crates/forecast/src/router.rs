@@ -259,6 +259,7 @@ async fn handle_forecast(
         .status(200)
         .header("Content-Type", "application/json")
         .header("Content-Encoding", "gzip")
+        .header("Access-Control-Allow-Origin", "*")
         .body(Body::Binary(compressed))
         .map_err(Box::new)?;
     Ok(resp)
@@ -398,6 +399,7 @@ async fn handle_forecast_members(
         .status(200)
         .header("Content-Type", "application/json")
         .header("Content-Encoding", "gzip")
+        .header("Access-Control-Allow-Origin", "*")
         .body(Body::Binary(compressed))
         .map_err(Box::new)?;
     Ok(resp)
@@ -447,6 +449,7 @@ fn serialize_and_compress_response(
         .status(200)
         .header("Content-Type", "application/json")
         .header("Content-Encoding", "gzip")
+        .header("Access-Control-Allow-Origin", "*")
         .body(Body::Binary(compressed))
         .map_err(Box::new)?;
     Ok(resp)
@@ -463,6 +466,7 @@ fn json_response(status: u16, body: &str) -> Result<Response<Body>, lambda_http:
     let resp = Response::builder()
         .status(status)
         .header("Content-Type", "application/json")
+        .header("Access-Control-Allow-Origin", "*")
         .body(Body::from(body.to_string()))
         .map_err(Box::new)?;
     Ok(resp)

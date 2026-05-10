@@ -9,6 +9,9 @@ import { aws_route53_targets as targets } from 'aws-cdk-lib';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as eventsTargets from 'aws-cdk-lib/aws-events-targets';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
@@ -27,6 +30,13 @@ export class WeatherApigLambdaStack extends cdk.Stack {
         const certificate = new acm.Certificate(this, 'WeatherCert', {
             domainName: 'weather.popelka-woods.com',
             validation: acm.CertificateValidation.fromDns(hostedZone),
+        });
+
+        // CloudFront requires certificates in us-east-1
+        const cdnCertificate = new acm.DnsValidatedCertificate(this, 'WeatherCdnCert', {
+            domainName: 'weather.popelka-woods.com',
+            hostedZone,
+            region: 'us-east-1',
         });
 
         // --- S3 Bucket for Cache ---
@@ -171,7 +181,6 @@ export class WeatherApigLambdaStack extends cdk.Stack {
         const api = new apigateway.RestApi(this, 'WeatherApi', {
             restApiName: 'WeatherApi',
             description: 'Weather API — forecast, geocode, metadata, stations',
-            binaryMediaTypes: ['*/*'],
             domainName: {
                 domainName: 'weather.popelka-woods.com',
                 certificate,
@@ -198,16 +207,8 @@ export class WeatherApigLambdaStack extends cdk.Stack {
             defaultCorsPreflightOptions: {
                 allowOrigins: apigateway.Cors.ALL_ORIGINS,
                 allowMethods: apigateway.Cors.ALL_METHODS,
-                allowHeaders: ['Content-Type', 'Authorization'],
+                allowHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
             },
-        });
-
-        // --- Route 53 A Record ---
-
-        new route53.ARecord(this, 'WeatherApiAliasRecord', {
-            zone: hostedZone,
-            recordName: 'weather.popelka-woods.com',
-            target: route53.RecordTarget.fromAlias(new targets.ApiGateway(api)),
         });
 
         // --- API Key & Usage Plan ---
@@ -257,6 +258,129 @@ export class WeatherApigLambdaStack extends cdk.Stack {
 
         const marine = stations.addResource('marine');
         marine.addMethod('GET', stationsIntegration, { apiKeyRequired: true });
+
+        // --- S3 Bucket for Frontend Static Assets ---
+
+        const frontendBucket = new s3.Bucket(this, 'WeatherFrontendBucket', {
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+            autoDeleteObjects: true,
+        });
+
+        // --- CloudFront Distribution ---
+
+        const apiOrigin = new origins.HttpOrigin(
+            `${api.restApiId}.execute-api.${this.region}.amazonaws.com`,
+            {
+                originPath: `/${api.deploymentStage.stageName}`,
+                protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+            },
+        );
+
+        // Use the built-in CACHING_DISABLED policy for API behaviors.
+        // The x-api-key header is forwarded via the origin request policy
+        // (ALL_VIEWER_EXCEPT_HOST_HEADER forwards all viewer headers to the origin).
+        const apiCachePolicy = cloudfront.CachePolicy.CACHING_DISABLED;
+
+        // --- CloudFront Function for SPA routing ---
+        // Rewrites requests to /index.html for paths that don't look like files.
+        // This replaces the errorResponses approach which interfered with API 403/404 responses.
+        const spaRoutingFunction = new cloudfront.Function(this, 'SpaRoutingFunction', {
+            code: cloudfront.FunctionCode.fromInline(`
+function handler(event) {
+    var request = event.request;
+    var uri = request.uri;
+    // If the URI has a file extension (e.g. .js, .css, .html, .png), pass through
+    if (uri.includes('.')) {
+        return request;
+    }
+    // Otherwise rewrite to /index.html for SPA routing
+    request.uri = '/index.html';
+    return request;
+}
+`),
+            functionName: 'weather-spa-routing',
+        });
+
+        const distribution = new cloudfront.Distribution(this, 'WeatherCdn', {
+            defaultBehavior: {
+                origin: origins.S3BucketOrigin.withOriginAccessControl(frontendBucket),
+                viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+                functionAssociations: [{
+                    function: spaRoutingFunction,
+                    eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+                }],
+            },
+            additionalBehaviors: {
+                '/forecast': {
+                    origin: apiOrigin,
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+                    cachePolicy: apiCachePolicy,
+                    originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                },
+                '/forecast/*': {
+                    origin: apiOrigin,
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+                    cachePolicy: apiCachePolicy,
+                    originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                },
+                '/geocode': {
+                    origin: apiOrigin,
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+                    cachePolicy: apiCachePolicy,
+                    originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                },
+                '/geocode/*': {
+                    origin: apiOrigin,
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+                    cachePolicy: apiCachePolicy,
+                    originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                },
+                '/models/*': {
+                    origin: apiOrigin,
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+                    cachePolicy: apiCachePolicy,
+                    originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                },
+                '/stations/*': {
+                    origin: apiOrigin,
+                    viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+                    allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+                    cachePolicy: apiCachePolicy,
+                    originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                },
+            },
+            domainNames: ['weather.popelka-woods.com'],
+            certificate: cdnCertificate,
+            defaultRootObject: 'index.html',
+        });
+
+        // --- Route 53 A Record ---
+
+        new route53.ARecord(this, 'WeatherApiAliasRecord', {
+            zone: hostedZone,
+            recordName: 'weather.popelka-woods.com',
+            target: route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
+        });
+
+        // --- Frontend Deployment ---
+
+        new s3deploy.BucketDeployment(this, 'DeployFrontend', {
+            sources: [s3deploy.Source.asset('frontend/dist')],
+            destinationBucket: frontendBucket,
+            distribution,
+            distributionPaths: ['/*'],
+            cacheControl: [
+                s3deploy.CacheControl.setPublic(),
+                s3deploy.CacheControl.maxAge(cdk.Duration.days(365)),
+                s3deploy.CacheControl.immutable(),
+            ],
+        });
 
         // --- CloudWatch Dashboard ---
 
