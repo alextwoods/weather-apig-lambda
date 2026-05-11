@@ -1,11 +1,30 @@
 /**
  * Color palette for weather chart rendering.
  *
- * Organized by usage context: band fills, model lines, overlays,
- * AQI categories, and UV severity levels.
+ * Organized by usage context: variable-specific colors, model toggle colors,
+ * overlay colors, AQI categories, and UV severity levels.
+ *
+ * Colors match the iOS EnsembleWeather app specification.
  */
 
-// --- Band fill colors (ensemble percentile bands) ---
+// --- Variable-specific colors (matching iOS app Section 11.2) ---
+
+export const VARIABLE_COLORS = {
+    temperature: { stroke: 'rgba(251, 146, 60, 1)', outer: 'rgba(251, 146, 60, 0.15)', inner: 'rgba(251, 146, 60, 0.30)' },
+    apparentTemp: { stroke: 'rgba(168, 85, 247, 1)', outer: 'rgba(168, 85, 247, 0.15)', inner: 'rgba(168, 85, 247, 0.30)' },
+    dewPoint: { stroke: 'rgba(34, 211, 238, 1)', outer: 'rgba(34, 211, 238, 0.15)', inner: 'rgba(34, 211, 238, 0.30)' },
+    windSpeed: { stroke: 'rgba(74, 222, 128, 1)', outer: 'rgba(74, 222, 128, 0.15)', inner: 'rgba(74, 222, 128, 0.30)' },
+    windGusts: { stroke: 'rgba(248, 113, 113, 1)', outer: 'rgba(248, 113, 113, 0.15)', inner: 'rgba(248, 113, 113, 0.30)' },
+    cloudCover: { stroke: 'rgba(156, 163, 175, 1)', outer: 'rgba(156, 163, 175, 0.15)', inner: 'rgba(156, 163, 175, 0.30)' },
+    humidity: { stroke: 'rgba(34, 211, 238, 1)', outer: 'rgba(34, 211, 238, 0.15)', inner: 'rgba(34, 211, 238, 0.30)' },
+    precipitation: { stroke: 'rgba(45, 212, 191, 1)', outer: 'rgba(45, 212, 191, 0.15)', inner: 'rgba(45, 212, 191, 0.30)' },
+    pressure: { stroke: 'rgba(96, 165, 250, 1)', outer: 'rgba(96, 165, 250, 0.15)', inner: 'rgba(96, 165, 250, 0.30)' },
+    solarIrradiance: { stroke: 'rgba(250, 204, 21, 1)', outer: 'rgba(250, 204, 21, 0.15)', inner: 'rgba(250, 204, 21, 0.30)' },
+} as const;
+
+export type VariableColorKey = keyof typeof VARIABLE_COLORS;
+
+// --- Band fill colors (legacy, kept for backward compat) ---
 
 /** Outer band fill (p10–p25 and p75–p90) — lighter, wider uncertainty */
 export const BAND_OUTER_FILL = 'rgba(59, 130, 246, 0.1)';
@@ -13,14 +32,14 @@ export const BAND_OUTER_FILL = 'rgba(59, 130, 246, 0.1)';
 /** Inner band fill (p25–p75) — darker, core uncertainty range */
 export const BAND_INNER_FILL = 'rgba(59, 130, 246, 0.25)';
 
-// --- Model colors (5 distinct colors for individual model lines in detail view) ---
+// --- Model toggle colors (matching iOS app Section 7.2) ---
 
 export const MODEL_COLORS = {
-    ecmwf: 'rgba(59, 130, 246, 0.8)',   // Blue
-    gfs: 'rgba(239, 68, 68, 0.8)',      // Red
-    icon: 'rgba(34, 197, 94, 0.8)',     // Green
-    gem: 'rgba(168, 85, 247, 0.8)',     // Purple
-    bom: 'rgba(245, 158, 11, 0.8)',     // Amber
+    ecmwf: 'rgba(59, 130, 246, 1)',     // Blue
+    gfs: 'rgba(74, 222, 128, 1)',       // Green
+    icon: 'rgba(251, 146, 60, 1)',      // Orange
+    gem: 'rgba(168, 85, 247, 1)',       // Purple
+    bom: 'rgba(248, 113, 113, 1)',      // Red
 } as const;
 
 /** Ordered array of model colors for indexed access */
@@ -32,16 +51,38 @@ export const MODEL_COLOR_LIST = [
     MODEL_COLORS.bom,
 ] as const;
 
-// --- Overlay colors ---
+// --- Overlay toggle colors (matching iOS app Section 8.2) ---
 
-/** HRRR overlay line color */
-export const HRRR_STROKE = 'rgba(239, 68, 68, 0.9)';
+export const OVERLAY_COLORS = {
+    hrrr: 'rgba(140, 140, 140, 1)',     // Gray (Color(white: 0.55))
+    obs: 'rgba(250, 204, 21, 1)',       // Yellow
+    extended: 'rgba(34, 211, 238, 1)',  // Cyan
+} as const;
 
-/** Observation point marker color */
-export const OBSERVATIONS_STROKE = 'rgba(34, 197, 94, 1)';
+// --- Overlay line colors ---
 
-/** Median line color */
+/** HRRR overlay line color — uses variable-specific color with reduced opacity */
+export const HRRR_STROKE = 'rgba(251, 146, 60, 0.5)';
+
+/** Observation point marker color — yellow per iOS spec */
+export const OBSERVATIONS_STROKE = 'rgba(250, 204, 21, 1)';
+
+/** Median line color (legacy default) */
 export const MEDIAN_STROKE = 'rgba(59, 130, 246, 1)';
+
+// --- Current time indicator ---
+export const CURRENT_TIME_STROKE = 'rgba(239, 68, 68, 1)';
+export const CURRENT_TIME_WIDTH = 1.5;
+
+// --- Day/Night shading ---
+// Day areas get a lighter overlay on the dark background; night areas remain unshaded.
+export const NIGHT_SHADE_FILL = 'rgba(156, 163, 175, 0.10)';
+export const DAY_SHADE_FILL = 'rgba(156, 163, 175, 0.10)';
+
+// --- Day separator ---
+export const DAY_SEPARATOR_STROKE = 'rgba(156, 163, 175, 0.6)';
+export const DAY_SEPARATOR_WIDTH = 0.8;
+export const DAY_SEPARATOR_DASH = [4, 4];
 
 // --- AQI (Air Quality Index) EPA category band colors ---
 

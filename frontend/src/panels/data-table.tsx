@@ -18,7 +18,7 @@ interface VariableRow {
  * Formats a time string as a short hour label (e.g. "14:00").
  */
 function formatTime(isoTime: string): string {
-    const d = new Date(isoTime);
+    const d = new Date(isoTime + (isoTime.includes('Z') || isoTime.includes('+') ? '' : 'Z'));
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 

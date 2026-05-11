@@ -17,8 +17,6 @@ export interface StoreState {
     isLoading: boolean;
     /** Error message from last failed operation */
     error: string | null;
-    /** Whether the user needs to provide an API key */
-    needsApiKey: boolean;
     /** Whether the location search prompt should be shown */
     needsLocationSearch: boolean;
 }
@@ -37,7 +35,6 @@ export type StoreAction =
     | { type: 'SET_FORECAST_DATA'; payload: ForecastResponse }
     | { type: 'SET_LOADING'; payload: boolean }
     | { type: 'SET_ERROR'; payload: string | null }
-    | { type: 'SET_NEEDS_API_KEY'; payload: boolean }
     | { type: 'SET_NEEDS_LOCATION_SEARCH'; payload: boolean }
     | { type: 'SET_APP_STATE'; payload: AppState };
 
@@ -56,7 +53,7 @@ export const DEFAULT_APP_STATE: AppState = {
     marine: null,
     stationId: null,
     models: new Set(['ecmwf', 'gfs', 'icon', 'gem', 'bom']),
-    zoom: '6h',
+    zoom: '5d',
     units: DEFAULT_UNITS,
     overlays: new Set<OverlayType>(),
     viewMode: 'chart',
@@ -67,7 +64,6 @@ export const INITIAL_STORE_STATE: StoreState = {
     forecastData: null,
     isLoading: false,
     error: null,
-    needsApiKey: false,
     needsLocationSearch: false,
 };
 
@@ -122,8 +118,6 @@ export function storeReducer(state: StoreState, action: StoreAction): StoreState
             return { ...state, isLoading: action.payload };
         case 'SET_ERROR':
             return { ...state, error: action.payload };
-        case 'SET_NEEDS_API_KEY':
-            return { ...state, needsApiKey: action.payload };
         case 'SET_NEEDS_LOCATION_SEARCH':
             return { ...state, needsLocationSearch: action.payload };
         case 'SET_APP_STATE':
@@ -183,12 +177,16 @@ export function initializeState(): StoreState {
  * StoredState uses arrays for models/overlays; AppState uses Sets.
  */
 function storedStateToAppState(stored: StoredState): AppState {
+    // Migrate legacy zoom levels to the new default
+    const validZoomLevels = new Set(['3d', '5d', '7d', '10d']);
+    const zoom: ZoomLevel = validZoomLevels.has(stored.zoom) ? stored.zoom : DEFAULT_APP_STATE.zoom;
+
     return {
         location: stored.location,
         marine: stored.marine,
         stationId: stored.stationId,
         models: new Set(stored.models.length > 0 ? stored.models : ['ecmwf', 'gfs', 'icon', 'gem', 'bom']),
-        zoom: stored.zoom,
+        zoom,
         units: stored.units,
         overlays: new Set(stored.overlays as OverlayType[]),
         viewMode: 'chart',
@@ -197,9 +195,8 @@ function storedStateToAppState(stored: StoredState): AppState {
 
 /**
  * Converts the current AppState into a StoredState for local storage persistence.
- * Requires the API key to be passed separately since it's not part of AppState.
  */
-function appStateToStoredState(appState: AppState, apiKey: string | null): StoredState {
+function appStateToStoredState(appState: AppState): StoredState {
     return {
         location: appState.location,
         marine: appState.marine,
@@ -208,7 +205,6 @@ function appStateToStoredState(appState: AppState, apiKey: string | null): Store
         units: appState.units,
         overlays: [...appState.overlays],
         zoom: appState.zoom,
-        apiKey,
     };
 }
 
@@ -241,10 +237,8 @@ export function useAppStore() {
  * URL and local storage synchronization. Use this in the top-level
  * App component to create the store provider value.
  */
-export function useCreateAppStore(apiKey: string | null): AppStoreContext {
+export function useCreateAppStore(): AppStoreContext {
     const [state, dispatch] = useReducer(storeReducer, undefined, initializeState);
-    const apiKeyRef = useRef(apiKey);
-    apiKeyRef.current = apiKey;
 
     // Sync appState changes to URL and local storage
     const prevAppStateRef = useRef(state.appState);
@@ -256,7 +250,7 @@ export function useCreateAppStore(apiKey: string | null): AppStoreContext {
             pushState(state.appState);
 
             // Persist to local storage
-            saveState(appStateToStoredState(state.appState, apiKeyRef.current));
+            saveState(appStateToStoredState(state.appState));
         }
     }, [state.appState]);
 

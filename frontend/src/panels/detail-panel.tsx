@@ -3,6 +3,7 @@ import type { MembersResponse } from '../api/types';
 import type { WeatherApiClient } from '../api/client';
 import type { UnitPreferences } from '../units/types';
 import type { ZoomLevel } from '../state/url-state';
+import { timesToUnixSeconds } from '../api/time-utils';
 import { convertTemp, convertWind, convertPressure, convertPrecip } from '../units/converter';
 import { ChartWrapper } from '../charts/chart-wrapper';
 import { MODEL_COLORS, BAND_OUTER_FILL, BAND_INNER_FILL } from '../charts/colors';
@@ -50,7 +51,7 @@ function buildDetailData(
     response: MembersResponse,
     unitConverter: (v: number) => number,
 ): uPlot.AlignedData {
-    const times = response.times.map(t => Math.floor(new Date(t).getTime() / 1000));
+    const times = timesToUnixSeconds(response.times);
     const { statistics, members_by_model } = response;
 
     const convertArray = (arr: (number | null)[]): (number | null | undefined)[] =>

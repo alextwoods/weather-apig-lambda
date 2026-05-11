@@ -1,16 +1,14 @@
 import { useState, useCallback, useRef, useEffect } from 'preact/hooks';
-import { WeatherApiClient, ApiError } from './api/client';
+import { WeatherApiClient } from './api/client';
 import type { ForecastParams } from './api/endpoints';
 import type { OverlayType, ZoomLevel } from './state/url-state';
 import { AppStore, useCreateAppStore } from './state/app-store';
-import { loadState, saveState } from './state/local-storage';
 
-import { LocationSearch } from './components/location-search';
+import { LocationManager } from './components/location-manager';
 import { ModelToggle } from './components/model-toggle';
 import { OverlayToggle } from './components/overlay-toggle';
 import { ZoomPicker } from './components/zoom-picker';
 import { RefreshControls } from './components/refresh-controls';
-import { ApiKeyPrompt } from './components/api-key-prompt';
 import { LoadingIndicator } from './components/loading-indicator';
 import { SettingsPanel } from './components/settings-panel';
 
@@ -25,40 +23,30 @@ import { PressurePanel } from './panels/pressure-panel';
 import { MarinePanel } from './panels/marine-panel';
 import { DataTable } from './panels/data-table';
 
-/** Load API key from local storage on startup. */
-function loadApiKey(): string | null {
-    const stored = loadState();
-    return stored?.apiKey ?? null;
-}
-
 /**
  * Top-level App component.
  * Composes the full UI: Header, MainContent (HUD + chart panels or data table),
- * Settings panel, API key prompt, and loading indicator.
+ * Settings panel, and loading indicator.
  *
  * Wires the initialization flow (URL → local storage → search prompt)
  * and forecast fetch on location selection, model toggle, and manual refresh.
  *
- * Validates: Requirements 2.3, 2.4, 2.5, 2.7, 4.7, 27.3
+ * API authentication is handled at the CloudFront layer (origin custom headers),
+ * so the frontend makes plain same-origin requests without an API key.
+ *
+ * Validates: Requirements 2.3, 2.4, 2.5, 2.7, 4.7
  */
 export function App() {
-    const [apiKey, setApiKey] = useState<string | null>(loadApiKey);
-    const [apiClient] = useState(() => new WeatherApiClient(apiKey));
-    const store = useCreateAppStore(apiKey);
+    const [apiClient] = useState(() => new WeatherApiClient());
+    const store = useCreateAppStore();
     const { state, dispatch } = store;
 
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const [locationManagerOpen, setLocationManagerOpen] = useState(false);
 
     // Keep a ref to the latest state for use in async callbacks
     const stateRef = useRef(state);
     stateRef.current = state;
-
-    // Keep apiClient in sync with apiKey changes
-    useEffect(() => {
-        if (apiKey) {
-            apiClient.setApiKey(apiKey);
-        }
-    }, [apiKey, apiClient]);
 
     // --- Forecast fetching ---
 
@@ -98,14 +86,8 @@ export function App() {
                 dispatch({ type: 'SET_FORECAST_DATA', payload: data });
                 dispatch({ type: 'SET_ERROR', payload: null });
             } catch (err) {
-                if (err instanceof ApiError && err.status === 403) {
-                    // 403 → show API key prompt, retain previous data
-                    dispatch({ type: 'SET_NEEDS_API_KEY', payload: true });
-                } else {
-                    // Network or other error → show error, retain previous data
-                    const message = err instanceof Error ? err.message : 'Failed to fetch forecast';
-                    dispatch({ type: 'SET_ERROR', payload: message });
-                }
+                const message = err instanceof Error ? err.message : 'Failed to fetch forecast';
+                dispatch({ type: 'SET_ERROR', payload: message });
             } finally {
                 dispatch({ type: 'SET_LOADING', payload: false });
             }
@@ -128,6 +110,22 @@ export function App() {
             dispatch({ type: 'SET_LOCATION', payload: location });
             // Fetch immediately after location selection
             // Use setTimeout to ensure state is updated before fetch reads it
+            setTimeout(() => fetchForecast(), 0);
+        },
+        [dispatch, fetchForecast],
+    );
+
+    const handleMarineSelect = useCallback(
+        (marine: { lat: number; lon: number } | null) => {
+            dispatch({ type: 'SET_MARINE', payload: marine });
+            setTimeout(() => fetchForecast(), 0);
+        },
+        [dispatch, fetchForecast],
+    );
+
+    const handleStationSelect = useCallback(
+        (stationId: string | null) => {
+            dispatch({ type: 'SET_STATION_ID', payload: stationId });
             setTimeout(() => fetchForecast(), 0);
         },
         [dispatch, fetchForecast],
@@ -168,28 +166,6 @@ export function App() {
         [fetchForecast],
     );
 
-    const handleApiKeySubmit = useCallback(
-        (key: string) => {
-            setApiKey(key);
-            apiClient.setApiKey(key);
-            dispatch({ type: 'SET_NEEDS_API_KEY', payload: false });
-
-            // Persist the API key to local storage
-            const stored = loadState();
-            if (stored) {
-                saveState({ ...stored, apiKey: key });
-            }
-
-            // Re-fetch with the new key
-            setTimeout(() => fetchForecast(), 0);
-        },
-        [apiClient, dispatch, fetchForecast],
-    );
-
-    const handleApiKeyClose = useCallback(() => {
-        dispatch({ type: 'SET_NEEDS_API_KEY', payload: false });
-    }, [dispatch]);
-
     const handleUnitsChange = useCallback(
         (units: import('./units/types').UnitPreferences) => {
             dispatch({ type: 'SET_UNITS', payload: units });
@@ -211,11 +187,18 @@ export function App() {
             <div class="app">
                 {/* Header bar */}
                 <header class="header">
-                    <LocationSearch
-                        onLocationSelect={handleLocationSelect}
-                        apiClient={apiClient}
-                        onApiKeyNeeded={() => dispatch({ type: 'SET_NEEDS_API_KEY', payload: true })}
-                    />
+                    {/* Location name / manage button */}
+                    <button
+                        type="button"
+                        class="header__location-btn"
+                        onClick={() => setLocationManagerOpen(true)}
+                        aria-label="Manage locations"
+                    >
+                        <span class="header__location-name">
+                            {state.appState.location?.name ?? 'No Location'}
+                        </span>
+                        <span class="header__location-icon">📍</span>
+                    </button>
                     <div class="header__controls">
                         <ModelToggle
                             enabledModels={state.appState.models}
@@ -226,6 +209,8 @@ export function App() {
                             onOverlaysChange={handleOverlaysChange}
                             hrrrAvailable={hrrrAvailable}
                             observationsAvailable={observationsAvailable}
+                            stationName={state.forecastData?.observations?.station?.name}
+                            stationDistanceKm={state.forecastData?.observations?.station?.distance_km}
                         />
                         <ZoomPicker
                             zoom={state.appState.zoom}
@@ -236,6 +221,8 @@ export function App() {
                             onSourceRefresh={handleSourceRefresh}
                             isLoading={state.isLoading}
                             sources={cacheSources}
+                            cacheInfo={state.forecastData?.cache}
+                            errors={state.forecastData?.errors}
                         />
                     </div>
                     <button
@@ -282,6 +269,7 @@ export function App() {
                                         <HudPanel
                                             forecast={state.forecastData}
                                             units={state.appState.units}
+                                            overlays={state.appState.overlays}
                                         />
                                         <TemperaturePanel
                                             forecast={state.forecastData}
@@ -351,11 +339,17 @@ export function App() {
                     onUnitsChange={handleUnitsChange}
                 />
 
-                {/* API key prompt modal */}
-                <ApiKeyPrompt
-                    isOpen={state.needsApiKey}
-                    onSubmit={handleApiKeySubmit}
-                    onClose={handleApiKeyClose}
+                {/* Location Manager modal */}
+                <LocationManager
+                    isOpen={locationManagerOpen}
+                    onClose={() => setLocationManagerOpen(false)}
+                    onLocationSelect={handleLocationSelect}
+                    onMarineSelect={handleMarineSelect}
+                    onStationSelect={handleStationSelect}
+                    currentLocation={state.appState.location}
+                    currentMarine={state.appState.marine}
+                    currentStationId={state.appState.stationId}
+                    apiClient={apiClient}
                 />
 
                 {/* Subtle loading indicator during refresh (when data already exists) */}

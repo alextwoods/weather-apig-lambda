@@ -9,7 +9,7 @@ import type { ZoomLevel } from "../../src/state/url-state";
  * Property 2: Local storage state round-trip
  *
  * For any valid StoredState object (with arbitrary location, marine coordinates,
- * station ID, model selections, unit preferences, overlays, zoom level, and API key),
+ * station ID, model selections, unit preferences, overlays, and zoom level),
  * persisting the state to local storage and then reading it back SHALL produce a
  * StoredState equivalent to the original.
  *
@@ -50,7 +50,7 @@ beforeEach(() => {
 
 // --- Generators ---
 
-const VALID_ZOOM_LEVELS: ZoomLevel[] = ["2h", "6h", "12h", "24h"];
+const VALID_ZOOM_LEVELS: ZoomLevel[] = ["3d", "5d", "7d", "10d"];
 
 // Generate finite doubles that pass isFinite() validation.
 // Exclude -0 since JSON.stringify(-0) === "0", so -0 cannot survive a JSON round-trip.
@@ -103,7 +103,6 @@ const storedStateArb: fc.Arbitrary<StoredState> = fc.record({
     units: unitPreferencesArb,
     overlays: overlaysArb,
     zoom: zoomArb,
-    apiKey: fc.option(fc.string({ minLength: 1, maxLength: 40 }), { nil: null }),
 });
 
 // --- Test ---

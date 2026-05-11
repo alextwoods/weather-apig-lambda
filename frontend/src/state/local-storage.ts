@@ -11,7 +11,6 @@ export interface StoredState {
     units: UnitPreferences;
     overlays: string[];
     zoom: ZoomLevel;
-    apiKey: string | null;
 }
 
 /**
@@ -105,11 +104,6 @@ function isValidStoredState(value: unknown): value is StoredState {
         return false;
     }
 
-    // apiKey: string | null
-    if (obj.apiKey !== null && typeof obj.apiKey !== 'string') {
-        return false;
-    }
-
     return true;
 }
 
@@ -150,8 +144,10 @@ function isValidUnitPreferences(value: unknown): value is UnitPreferences {
     );
 }
 
-const VALID_ZOOM_LEVELS = new Set(['2h', '6h', '12h', '24h']);
+const VALID_ZOOM_LEVELS = new Set(['3d', '5d', '7d', '10d']);
+/** Legacy zoom levels that should be migrated to the new default */
+const LEGACY_ZOOM_LEVELS = new Set(['2h', '6h', '12h', '24h']);
 
 function isValidZoomLevel(value: unknown): value is ZoomLevel {
-    return typeof value === 'string' && VALID_ZOOM_LEVELS.has(value);
+    return typeof value === 'string' && (VALID_ZOOM_LEVELS.has(value) || LEGACY_ZOOM_LEVELS.has(value));
 }

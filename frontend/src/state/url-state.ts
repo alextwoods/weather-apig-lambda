@@ -2,7 +2,7 @@ import type { UnitPreferences, TempUnit, WindUnit, PressureUnit, PrecipUnit, Wav
 
 // --- Domain types for URL state ---
 
-export type ZoomLevel = '2h' | '6h' | '12h' | '24h';
+export type ZoomLevel = '3d' | '5d' | '7d' | '10d';
 export type OverlayType = 'hrrr' | 'obs' | 'extended';
 export type ModelShortName = 'ecmwf' | 'gfs' | 'icon' | 'gem' | 'bom';
 
@@ -19,7 +19,7 @@ export interface AppState {
 
 // --- Valid value sets for parsing ---
 
-const VALID_ZOOM_LEVELS: ReadonlySet<string> = new Set(['2h', '6h', '12h', '24h']);
+const VALID_ZOOM_LEVELS: ReadonlySet<string> = new Set(['3d', '5d', '7d', '10d']);
 const VALID_OVERLAY_TYPES: ReadonlySet<string> = new Set(['hrrr', 'obs', 'extended']);
 const VALID_MODEL_NAMES: ReadonlySet<string> = new Set(['ecmwf', 'gfs', 'icon', 'gem', 'bom']);
 const VALID_TEMP_UNITS: ReadonlySet<string> = new Set(['C', 'F']);

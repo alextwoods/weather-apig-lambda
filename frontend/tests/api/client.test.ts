@@ -107,56 +107,23 @@ describe('WeatherApiClient', () => {
     beforeEach(() => {
         mockFetch = vi.fn();
         vi.stubGlobal('fetch', mockFetch);
-        client = new WeatherApiClient('test-api-key-123');
+        client = new WeatherApiClient();
     });
 
     afterEach(() => {
         vi.unstubAllGlobals();
     });
 
-    describe('x-api-key header injection', () => {
-        it('includes x-api-key header when API key is set', async () => {
+    describe('request behavior', () => {
+        it('makes plain fetch calls without custom headers', async () => {
             mockFetch.mockResolvedValue({
                 ok: true,
-                json: () => Promise.resolve([]),
+                json: () => Promise.resolve({ results: [] }),
             });
 
             await client.geocode('Seattle');
 
-            expect(mockFetch).toHaveBeenCalledWith(
-                '/geocode?q=Seattle',
-                { headers: { 'x-api-key': 'test-api-key-123' } },
-            );
-        });
-
-        it('does NOT include x-api-key header when API key is null', async () => {
-            const noKeyClient = new WeatherApiClient(null);
-            mockFetch.mockResolvedValue({
-                ok: true,
-                json: () => Promise.resolve([]),
-            });
-
-            await noKeyClient.geocode('Seattle');
-
-            expect(mockFetch).toHaveBeenCalledWith(
-                '/geocode?q=Seattle',
-                { headers: {} },
-            );
-        });
-
-        it('uses updated key after setApiKey is called', async () => {
-            client.setApiKey('new-key-456');
-            mockFetch.mockResolvedValue({
-                ok: true,
-                json: () => Promise.resolve([]),
-            });
-
-            await client.geocode('Portland');
-
-            expect(mockFetch).toHaveBeenCalledWith(
-                '/geocode?q=Portland',
-                { headers: { 'x-api-key': 'new-key-456' } },
-            );
+            expect(mockFetch).toHaveBeenCalledWith('/geocode?q=Seattle');
         });
     });
 
@@ -258,26 +225,24 @@ describe('WeatherApiClient', () => {
         it('calls correct URL for observationStations', async () => {
             mockFetch.mockResolvedValue({
                 ok: true,
-                json: () => Promise.resolve([]),
+                json: () => Promise.resolve({ stations: [] }),
             });
 
             await client.observationStations(47.61, -122.33);
             expect(mockFetch).toHaveBeenCalledWith(
                 '/stations/observations?lat=47.61&lon=-122.33',
-                expect.objectContaining({ headers: { 'x-api-key': 'test-api-key-123' } }),
             );
         });
 
         it('calls correct URL for marineStations', async () => {
             mockFetch.mockResolvedValue({
                 ok: true,
-                json: () => Promise.resolve([]),
+                json: () => Promise.resolve({ stations: [] }),
             });
 
             await client.marineStations(47.61, -122.33);
             expect(mockFetch).toHaveBeenCalledWith(
                 '/stations/marine?lat=47.61&lon=-122.33',
-                expect.objectContaining({ headers: { 'x-api-key': 'test-api-key-123' } }),
             );
         });
 
@@ -290,7 +255,6 @@ describe('WeatherApiClient', () => {
             await client.forecastMembers({ variable: 'temperature_2m', lat: 47.61, lon: -122.33 });
             expect(mockFetch).toHaveBeenCalledWith(
                 '/forecast/members?variable=temperature_2m&lat=47.61&lon=-122.33',
-                expect.objectContaining({ headers: { 'x-api-key': 'test-api-key-123' } }),
             );
         });
     });

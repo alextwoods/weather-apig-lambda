@@ -212,10 +212,15 @@ export class WeatherApigLambdaStack extends cdk.Stack {
         });
 
         // --- API Key & Usage Plan ---
+        // The key value is specified explicitly so it can be referenced in the
+        // CloudFront origin custom headers (CloudFront injects it on every request
+        // to API Gateway, so the frontend never needs to send it).
+        const apiKeyValue = 'WeatherApiKey2025PopelkaWoods';
 
         const apiKey = api.addApiKey('WeatherApiKey', {
-            apiKeyName: 'weather-api-key',
-            description: 'API key for weather.popelka-woods.com',
+            apiKeyName: 'weather-api-key-cf',
+            description: 'API key for weather.popelka-woods.com (injected by CloudFront)',
+            value: apiKeyValue,
         });
 
         const usagePlan = api.addUsagePlan('WeatherUsagePlan', {
@@ -273,6 +278,9 @@ export class WeatherApigLambdaStack extends cdk.Stack {
             {
                 originPath: `/${api.deploymentStage.stageName}`,
                 protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+                customHeaders: {
+                    'x-api-key': apiKeyValue,
+                },
             },
         );
 

@@ -2,10 +2,10 @@ import type { ZoomLevel } from '../state/url-state';
 
 /** Available zoom levels with their display labels */
 const ZOOM_OPTIONS: ReadonlyArray<{ value: ZoomLevel; label: string }> = [
-    { value: '2h', label: '2h' },
-    { value: '6h', label: '6h' },
-    { value: '12h', label: '12h' },
-    { value: '24h', label: '24h' },
+    { value: '3d', label: '3d' },
+    { value: '5d', label: '5d' },
+    { value: '7d', label: '7d' },
+    { value: '10d', label: '10d' },
 ];
 
 export interface ZoomPickerProps {

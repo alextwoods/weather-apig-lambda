@@ -5,37 +5,28 @@
  * including CORS headers, response format, and error handling.
  *
  * Requirements:
- *   - WEATHER_API_KEY environment variable must be set
  *   - Network access to weather.popelka-woods.com
  *
  * Run with:
- *   WEATHER_API_KEY=<key> npx vitest --run tests/integration/
+ *   npx vitest --run tests/integration/
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { WeatherApiClient } from '../../src/api/client';
 
 const BASE_URL = 'https://weather.popelka-woods.com';
-const API_KEY = process.env.WEATHER_API_KEY ?? '';
 
-// Skip the entire suite if no API key is provided
-const describeIntegration = API_KEY ? describe : describe.skip;
-
-describeIntegration('Live API Integration Tests', () => {
+describe('Live API Integration Tests', () => {
     let client: WeatherApiClient;
 
     beforeAll(() => {
         // The WeatherApiClient uses relative URLs by default (for browser use).
-        // For integration tests we need absolute URLs, so we create a custom client.
-        client = new WeatherApiClient(API_KEY);
+        // For integration tests we need absolute URLs, so we patch fetch below.
+        client = new WeatherApiClient();
     });
 
-    // --- Helper to make raw fetch requests with the API key ---
+    // --- Helper to make raw fetch requests ---
     async function apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
-        const headers: Record<string, string> = {
-            'x-api-key': API_KEY,
-            ...(options.headers as Record<string, string> ?? {}),
-        };
-        return fetch(`${BASE_URL}${path}`, { ...options, headers });
+        return fetch(`${BASE_URL}${path}`, options);
     }
 
     // =========================================================================
@@ -48,13 +39,12 @@ describeIntegration('Live API Integration Tests', () => {
                 headers: {
                     'Origin': 'https://weather.popelka-woods.com',
                     'Access-Control-Request-Method': 'GET',
-                    'Access-Control-Request-Headers': 'x-api-key',
+                    'Access-Control-Request-Headers': 'content-type',
                 },
             });
 
             expect(resp.status).toBe(204);
             expect(resp.headers.get('access-control-allow-origin')).toBe('*');
-            expect(resp.headers.get('access-control-allow-headers')).toContain('x-api-key');
             expect(resp.headers.get('access-control-allow-methods')).toContain('GET');
         });
 
@@ -64,39 +54,33 @@ describeIntegration('Live API Integration Tests', () => {
                 headers: {
                     'Origin': 'https://weather.popelka-woods.com',
                     'Access-Control-Request-Method': 'GET',
-                    'Access-Control-Request-Headers': 'x-api-key',
+                    'Access-Control-Request-Headers': 'content-type',
                 },
             });
 
             expect(resp.status).toBe(204);
             expect(resp.headers.get('access-control-allow-origin')).toBe('*');
-            expect(resp.headers.get('access-control-allow-headers')).toContain('x-api-key');
         });
     });
 
     // =========================================================================
-    // API Key Enforcement
+    // CloudFront API Key Injection
     // =========================================================================
-    describe('API key enforcement', () => {
-        it('geocode without API key returns 403 (not HTML)', async () => {
+    describe('CloudFront API key injection', () => {
+        it('geocode succeeds without client-side API key (CloudFront injects it)', async () => {
             const resp = await fetch(`${BASE_URL}/geocode?q=Seattle`);
 
-            expect(resp.status).toBe(403);
+            expect(resp.status).toBe(200);
             const contentType = resp.headers.get('content-type') ?? '';
             expect(contentType).toContain('application/json');
-            // Must NOT be HTML (the old errorResponses bug)
-            const body = await resp.text();
-            expect(body).not.toContain('<!DOCTYPE');
         });
 
-        it('forecast without API key returns 403 (not HTML)', async () => {
+        it('forecast succeeds without client-side API key (CloudFront injects it)', async () => {
             const resp = await fetch(`${BASE_URL}/forecast?lat=47.67&lon=-122.37`);
 
-            expect(resp.status).toBe(403);
+            expect(resp.status).toBe(200);
             const contentType = resp.headers.get('content-type') ?? '';
             expect(contentType).toContain('application/json');
-            const body = await resp.text();
-            expect(body).not.toContain('<!DOCTYPE');
         });
     });
 

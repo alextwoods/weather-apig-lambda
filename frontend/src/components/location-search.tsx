@@ -1,11 +1,10 @@
 import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
-import { ApiError, type WeatherApiClient } from '../api/client';
+import type { WeatherApiClient } from '../api/client';
 import type { GeocodeResult } from '../api/types';
 
 export interface LocationSearchProps {
     onLocationSelect: (location: { lat: number; lon: number; name: string }) => void;
     apiClient: WeatherApiClient;
-    onApiKeyNeeded?: () => void;
 }
 
 /**
@@ -14,7 +13,7 @@ export interface LocationSearchProps {
  * shows matching results in a dropdown, and calls onLocationSelect
  * when the user picks a result.
  */
-export function LocationSearch({ onLocationSelect, apiClient, onApiKeyNeeded }: LocationSearchProps) {
+export function LocationSearch({ onLocationSelect, apiClient }: LocationSearchProps) {
     const [query, setQuery] = useState('');
     const [results, setResults] = useState<GeocodeResult[]>([]);
     const [isLoading, setIsLoading] = useState(false);
@@ -64,9 +63,6 @@ export function LocationSearch({ onLocationSelect, apiClient, onApiKeyNeeded }: 
                     setResults(geocodeResults);
                     setIsOpen(geocodeResults.length > 0);
                 } catch (err) {
-                    if (err instanceof ApiError && err.status === 403) {
-                        onApiKeyNeeded?.();
-                    }
                     setError('Search failed');
                     setResults([]);
                     setIsOpen(true);

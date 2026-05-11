@@ -20,7 +20,7 @@ import type { ZoomLevel } from "../../src/state/url-state";
  * **Validates: Requirements 7.3, 20.2**
  */
 describe("Property 7: Zoom level produces correct time axis range", () => {
-    const zoomLevelArb = fc.constantFrom<ZoomLevel>("2h", "6h", "12h", "24h");
+    const zoomLevelArb = fc.constantFrom<ZoomLevel>("3d", "5d", "7d", "10d");
     const viewportWidthArb = fc.integer({ min: 320, max: 3840 });
 
     it("computeTimeRange durationSeconds equals expected zoom duration", () => {

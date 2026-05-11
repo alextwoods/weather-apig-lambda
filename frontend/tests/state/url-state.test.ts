@@ -24,7 +24,7 @@ import type { UnitPreferences } from "../../src/units/types";
 // --- Generators ---
 
 const VALID_MODELS = ["ecmwf", "gfs", "icon", "gem", "bom"] as const;
-const VALID_ZOOM_LEVELS: ZoomLevel[] = ["2h", "6h", "12h", "24h"];
+const VALID_ZOOM_LEVELS: ZoomLevel[] = ["3d", "5d", "7d", "10d"];
 const VALID_OVERLAYS: OverlayType[] = ["hrrr", "obs", "extended"];
 
 const latArb = fc.double({ min: -90, max: 90, noNaN: true, noDefaultInfinity: true });
@@ -150,36 +150,6 @@ describe("Property 1: URL state serialization round-trip", () => {
 
                 // View mode
                 expect(deserialized.viewMode).toBe(state.viewMode);
-            }),
-            { numRuns: 100 },
-        );
-    });
-});
-
-// Feature: weather-web-frontend, Property 5: API key never exposed in URL
-
-/**
- * Property 5: API key never exposed in URL
- *
- * For any valid AppState (including states where an API key is stored in local storage),
- * the serialized URL string SHALL never contain the API key value as a substring.
- *
- * Validates: Requirements 27.4
- */
-
-const apiKeyArb = fc.stringMatching(/^[a-zA-Z0-9]{10,40}$/);
-
-describe("Property 5: API key never exposed in URL", () => {
-    it("serialized URL params never contain the API key value", () => {
-        fc.assert(
-            fc.property(appStateArb, apiKeyArb, (state, apiKey) => {
-                // Simulate API key being stored in local storage (not in AppState)
-                // Serialize the state to URL params
-                const params = serializeToUrl(state);
-                const urlString = params.toString();
-
-                // The API key must never appear in the URL string
-                expect(urlString).not.toContain(apiKey);
             }),
             { numRuns: 100 },
         );

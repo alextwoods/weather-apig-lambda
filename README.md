@@ -114,6 +114,7 @@ This produces content-hashed JS and CSS bundles in `frontend/dist/`. The CDK sta
 ## Build and deploy it all - one shot
 ```
 make && cd frontend && npm run build && cd ../ && cdk deploy
+```
 
 ### Architecture
 

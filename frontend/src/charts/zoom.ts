@@ -3,10 +3,10 @@ import type { ZoomLevel } from '../state/url-state';
 // --- Zoom level duration mapping (seconds) ---
 
 export const ZOOM_DURATION_SECONDS: Record<ZoomLevel, number> = {
-    '2h': 7200,
-    '6h': 21600,
-    '12h': 43200,
-    '24h': 86400,
+    '3d': 3 * 86400,
+    '5d': 5 * 86400,
+    '7d': 7 * 86400,
+    '10d': 10 * 86400,
 };
 
 /**

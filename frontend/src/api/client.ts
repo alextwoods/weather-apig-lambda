@@ -16,7 +16,7 @@ import {
 
 /**
  * Custom error class that includes the HTTP status code.
- * Callers can check `error.status === 403` to trigger the API key prompt.
+ * Callers can check `error.status` to handle specific HTTP errors.
  */
 export class ApiError extends Error {
     public readonly status: number;
@@ -29,24 +29,11 @@ export class ApiError extends Error {
 }
 
 /**
- * Thin wrapper around `fetch` that injects the `x-api-key` header
- * and provides typed methods for each API endpoint.
+ * Thin wrapper around `fetch` that provides typed methods for each API endpoint.
+ * The API key is injected by CloudFront at the origin level, so the frontend
+ * does not need to send it. This client simply makes same-origin requests.
  */
 export class WeatherApiClient {
-    private apiKey: string | null;
-
-    constructor(apiKey: string | null = null) {
-        this.apiKey = apiKey;
-    }
-
-    setApiKey(key: string): void {
-        this.apiKey = key;
-    }
-
-    getApiKey(): string | null {
-        return this.apiKey;
-    }
-
     async forecast(params: ForecastParams): Promise<ForecastResponse> {
         return this.request<ForecastResponse>(forecastUrl(params));
     }
@@ -61,22 +48,19 @@ export class WeatherApiClient {
     }
 
     async observationStations(lat: number, lon: number): Promise<StationsResponse> {
-        return this.request<StationsResponse>(observationStationsUrl(lat, lon));
+        const data = await this.request<{ stations: StationsResponse }>(observationStationsUrl(lat, lon));
+        return data.stations;
     }
 
     async marineStations(lat: number, lon: number): Promise<StationsResponse> {
-        return this.request<StationsResponse>(marineStationsUrl(lat, lon));
+        const data = await this.request<{ stations: StationsResponse }>(marineStationsUrl(lat, lon));
+        return data.stations;
     }
 
     private async request<T>(url: string): Promise<T> {
-        const headers: Record<string, string> = {};
-        if (this.apiKey) {
-            headers['x-api-key'] = this.apiKey;
-        }
-
         let response: Response;
         try {
-            response = await fetch(url, { headers });
+            response = await fetch(url);
         } catch (error) {
             throw new ApiError(
                 error instanceof Error ? error.message : 'Network error',

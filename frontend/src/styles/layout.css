@@ -21,6 +21,42 @@
     min-height: var(--tap-target-min);
 }
 
+/* Header location button */
+.header__location-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    min-width: auto;
+    min-height: 32px;
+    border: 1px solid var(--color-border);
+    border-radius: 16px;
+    background-color: var(--color-surface-raised);
+    color: var(--color-text-primary);
+    font-size: var(--font-sm);
+    font-weight: var(--font-weight-medium);
+    cursor: pointer;
+    transition: border-color var(--transition-fast), background-color var(--transition-fast);
+    white-space: nowrap;
+    max-width: 200px;
+    overflow: hidden;
+}
+
+.header__location-btn:hover {
+    border-color: var(--color-accent);
+    background-color: var(--color-surface);
+}
+
+.header__location-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.header__location-icon {
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
 /* Main content area: stacked by default (mobile-first) */
 .main {
     display: flex;
@@ -174,4 +210,47 @@
 .toggle-bar__button:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+}
+
+/* Capsule-shaped toggle buttons (model & overlay toggles) */
+.toggle-bar__capsule {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 8px;
+    min-width: auto;
+    min-height: 28px;
+    border: 1px solid;
+    border-radius: 14px;
+    font-size: var(--font-xs);
+    font-weight: var(--font-weight-medium);
+    cursor: pointer;
+    transition: background-color var(--transition-fast),
+        border-color var(--transition-fast),
+        color var(--transition-fast),
+        opacity var(--transition-fast);
+}
+
+.toggle-bar__capsule:hover {
+    opacity: 0.85 !important;
+}
+
+/* Info button in toggle bar */
+.toggle-bar__info-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    color: var(--color-text-secondary);
+    font-size: var(--font-sm);
+    cursor: pointer;
+}
+
+.toggle-bar__info-btn:hover {
+    color: var(--color-text-primary);
 }
