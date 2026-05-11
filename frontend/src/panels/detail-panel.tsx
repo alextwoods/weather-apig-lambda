@@ -8,6 +8,7 @@ import { convertTemp, convertWind, convertPressure, convertPrecip } from '../uni
 import { ChartWrapper } from '../charts/chart-wrapper';
 import { MODEL_COLORS, BAND_OUTER_FILL, BAND_INNER_FILL } from '../charts/colors';
 import { CHART_SYNC_KEY } from '../charts/sync';
+import { createCrosshairTooltipHook } from '../charts/hooks';
 import uPlot from 'uplot';
 
 export interface DetailPanelProps {
@@ -143,6 +144,7 @@ function buildDetailOptions(
         cursor: { sync: { key: syncKey } },
         scales: { x: { time: true }, y: { auto: true } },
         legend: { show: false },
+        hooks: { setCursor: [createCrosshairTooltipHook()] },
     };
 }
 

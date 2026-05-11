@@ -7,6 +7,7 @@ import { CHART_SYNC_KEY } from '../charts/sync';
 import { VARIABLE_COLORS } from '../charts/colors';
 import { timesToUnixSeconds, parseUtcMs } from '../api/time-utils';
 import { ZOOM_DURATION_SECONDS } from '../charts/zoom';
+import { createCrosshairTooltipHook } from '../charts/hooks';
 import uPlot from 'uplot';
 import { CURRENT_TIME_STROKE, CURRENT_TIME_WIDTH, DAY_SHADE_FILL } from '../charts/colors';
 
@@ -109,7 +110,7 @@ function buildPrecipProbOptions(
         },
         cursor: { sync: { key: syncKey } },
         legend: { show: false },
-        hooks: drawHooks.length > 0 ? { draw: drawHooks } : {},
+        hooks: drawHooks.length > 0 ? { draw: drawHooks, setCursor: [createCrosshairTooltipHook()] } : { setCursor: [createCrosshairTooltipHook()] },
     };
 }
 

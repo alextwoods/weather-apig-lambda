@@ -73,29 +73,74 @@ function drawNightRegion(
 }
 
 /**
- * Tooltip element ID used by the crosshair tooltip hook.
+ * CSS class used to locate the crosshair tooltip within each chart's root element.
  */
-const TOOLTIP_ID = 'uplot-crosshair-tooltip';
+const TOOLTIP_CLASS = 'chart-crosshair-tooltip';
 
 /**
- * Creates a uPlot cursor hook that displays a tooltip with values
+ * Attribute set on u.root to track whether the mouse is directly over this chart.
+ * Used to prevent synced charts from showing tooltips.
+ */
+const HOVER_ATTR = 'data-chart-hovered';
+
+/**
+ * Describes a visible series entry for tooltip rendering.
+ * For fan charts, includes p10/p90 range values alongside the median.
+ */
+interface TooltipEntry {
+    label: string;
+    color: string;
+    value: number;
+    p10?: number | null;
+    p90?: number | null;
+}
+
+/**
+ * Creates a uPlot setCursor hook that displays a tooltip with values
  * at the current crosshair position.
  *
  * The tooltip shows the time and all visible series values at the
- * cursor's x-position. It is positioned near the cursor and hidden
- * when the cursor leaves the chart.
+ * cursor's x-position. For fan chart series, it shows the median value
+ * with the p10–p90 range in parentheses (e.g., "66 (62–67)").
+ *
+ * Only shows on the chart being directly hovered (not on synced charts).
+ * Uses mouseenter/mouseleave tracking on u.over (the plot overlay element)
+ * to determine hover state.
  *
  * @returns A uPlot setCursor hook function
  */
 export function createCrosshairTooltipHook(): (u: uPlot) => void {
+    let hoverListenersAttached = false;
+
     return (u: uPlot) => {
-        const { left, idx } = u.cursor;
+        // Attach hover tracking listeners once on the over element (the interactive plot area)
+        if (!hoverListenersAttached) {
+            hoverListenersAttached = true;
+            // Ensure u.root can serve as positioning context
+            const rootStyle = getComputedStyle(u.root);
+            if (rootStyle.position === 'static') {
+                u.root.style.position = 'relative';
+            }
 
-        // Get or create the tooltip element
-        let tooltip = u.root.querySelector(`#${TOOLTIP_ID}`) as HTMLDivElement | null;
+            u.over.addEventListener('mouseenter', () => {
+                u.root.setAttribute(HOVER_ATTR, '1');
+            });
+            u.over.addEventListener('mouseleave', () => {
+                u.root.removeAttribute(HOVER_ATTR);
+                const tt = u.root.querySelector(`.${TOOLTIP_CLASS}`) as HTMLDivElement | null;
+                if (tt) tt.style.display = 'none';
+            });
+        }
 
-        if (left === undefined || left < 0 || idx === undefined || idx === null) {
-            // Cursor is outside the chart — hide tooltip
+        const { left, top, idx } = u.cursor;
+
+        // Get or create the tooltip element scoped to this chart's root
+        let tooltip = u.root.querySelector(`.${TOOLTIP_CLASS}`) as HTMLDivElement | null;
+
+        // Only show tooltip on the chart being directly hovered
+        const isHovered = u.root.hasAttribute(HOVER_ATTR);
+
+        if (!isHovered || left == null || left < 0 || idx == null) {
             if (tooltip) {
                 tooltip.style.display = 'none';
             }
@@ -104,72 +149,112 @@ export function createCrosshairTooltipHook(): (u: uPlot) => void {
 
         if (!tooltip) {
             tooltip = document.createElement('div');
-            tooltip.id = TOOLTIP_ID;
-            tooltip.style.position = 'absolute';
-            tooltip.style.pointerEvents = 'none';
-            tooltip.style.background = 'rgba(255, 255, 255, 0.95)';
-            tooltip.style.border = '1px solid #ddd';
-            tooltip.style.borderRadius = '4px';
-            tooltip.style.padding = '6px 10px';
-            tooltip.style.fontSize = '12px';
-            tooltip.style.lineHeight = '1.4';
-            tooltip.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
-            tooltip.style.zIndex = '100';
-            tooltip.style.whiteSpace = 'nowrap';
+            tooltip.className = TOOLTIP_CLASS;
             u.root.appendChild(tooltip);
         }
 
-        // Build tooltip content
+        // Build tooltip entries, grouping fan chart series (median + range)
+        const entries: TooltipEntry[] = [];
+
+        for (let i = 1; i < u.series.length; i++) {
+            const series = u.series[i];
+            if (!series.show) continue;
+
+            const stroke = series.stroke;
+            if (!stroke || stroke === 'transparent') continue;
+            if ((series as any).width === 0) continue;
+
+            const value = u.data[i]?.[idx];
+            if (value === null || value === undefined) continue;
+
+            const label = series.label;
+            if (!label || typeof label !== 'string') continue;
+            // Skip series whose labels are percentile boundaries
+            if (/^(p\d+|.*\bp\d+)$/i.test(label)) continue;
+
+            const colorStr: string = typeof stroke === 'string' ? stroke : 'var(--color-text-primary)';
+
+            // Look for corresponding p10 and p90 values for this series.
+            // Fan chart data layout per variable: p90, p75, median, p25, p10
+            // So median is at index i, p90 is at i-2, p10 is at i+2
+            let p10: number | null | undefined = undefined;
+            let p90: number | null | undefined = undefined;
+
+            // Check if this looks like a median in a fan chart group:
+            // The series 2 positions before should be labeled with p90/p75 pattern
+            // and 2 positions after should be p25/p10 pattern
+            if (i >= 3) {
+                const prevLabel = u.series[i - 2]?.label;
+                const prev2Label = u.series[i - 1]?.label;
+                if (typeof prevLabel === 'string' && typeof prev2Label === 'string' &&
+                    (/p90/i.test(prevLabel) || (u.series[i - 2] as any)?.width === 0) &&
+                    (/p75/i.test(prev2Label) || (u.series[i - 1] as any)?.width === 0)) {
+                    // This is likely a median — grab p90 (i-2) and p10 (i+2)
+                    const p90Val = u.data[i - 2]?.[idx];
+                    const p10Val = u.data[i + 2]?.[idx];
+                    if (typeof p90Val === 'number') p90 = p90Val;
+                    if (typeof p10Val === 'number') p10 = p10Val;
+                }
+            }
+
+            entries.push({ label, color: colorStr, value, p10, p90 });
+        }
+
+        if (entries.length === 0) {
+            tooltip.style.display = 'none';
+            return;
+        }
+
+        // Build HTML
         const lines: string[] = [];
 
         // Time label
         const time = u.data[0][idx];
         if (time !== undefined && time !== null) {
             const date = new Date(time * 1000);
-            lines.push(`<strong>${date.toLocaleString(undefined, {
+            lines.push(`<span class="chart-crosshair-tooltip__time">${date.toLocaleString(undefined, {
+                weekday: 'short',
                 month: 'short',
                 day: 'numeric',
                 hour: '2-digit',
                 minute: '2-digit',
-            })}</strong>`);
+            })}</span>`);
         }
 
-        // Series values (skip series 0 which is the time axis)
-        for (let i = 1; i < u.series.length; i++) {
-            const series = u.series[i];
-            if (!series.show) continue;
-
-            // Skip hidden band-boundary series (no stroke or transparent stroke)
-            const stroke = series.stroke;
-            if (!stroke || stroke === 'transparent') continue;
-
-            const value = u.data[i]?.[idx];
-            if (value === null || value === undefined) continue;
-
-            const label = series.label ?? `Series ${i}`;
-            lines.push(`<span style="color:${typeof stroke === 'function' ? '#333' : stroke}">${label}: ${value.toFixed(1)}</span>`);
+        for (const entry of entries) {
+            let valueStr = `${Math.round(entry.value)}`;
+            if (entry.p10 != null && entry.p90 != null) {
+                valueStr += `<span class="chart-crosshair-tooltip__range">(${Math.round(entry.p10)}–${Math.round(entry.p90)})</span>`;
+            }
+            lines.push(`<span class="chart-crosshair-tooltip__row"><span class="chart-crosshair-tooltip__dot" style="background:${entry.color}"></span><span class="chart-crosshair-tooltip__label" style="color:${entry.color}">${entry.label}:</span> <span class="chart-crosshair-tooltip__value" style="color:${entry.color}">${valueStr}</span></span>`);
         }
 
-        if (lines.length === 0) {
-            tooltip.style.display = 'none';
-            return;
-        }
+        tooltip.innerHTML = lines.join('');
+        tooltip.style.display = 'flex';
 
-        tooltip.innerHTML = lines.join('<br>');
-        tooltip.style.display = 'block';
+        // Position tooltip relative to u.root.
+        // u.cursor.left/top are CSS pixels from the plot area's left/top edge.
+        // u.bbox is in canvas pixels, divide by devicePixelRatio for CSS pixels.
+        const plotLeft = u.bbox.left / devicePixelRatio;
+        const plotTop = u.bbox.top / devicePixelRatio;
+        const plotWidth = u.bbox.width / devicePixelRatio;
+        const plotHeight = u.bbox.height / devicePixelRatio;
 
-        // Position tooltip near cursor, offset to the right
         const tooltipWidth = tooltip.offsetWidth;
-        const plotRight = u.bbox.left + u.bbox.width;
-        const cursorX = u.bbox.left + left;
+        const tooltipHeight = tooltip.offsetHeight;
+        const cursorCssX = plotLeft + left;
+        const cursorCssY = plotTop + (top ?? 0);
 
-        // Flip to left side if too close to right edge
-        if (cursorX + tooltipWidth + 16 > plotRight) {
-            tooltip.style.left = `${left - tooltipWidth - 10}px`;
+        // Horizontal: flip to left side if too close to right edge
+        if (cursorCssX + tooltipWidth + 12 > plotLeft + plotWidth) {
+            tooltip.style.left = `${cursorCssX - tooltipWidth - 8}px`;
         } else {
-            tooltip.style.left = `${left + 16}px`;
+            tooltip.style.left = `${cursorCssX + 12}px`;
         }
 
-        tooltip.style.top = `${u.bbox.top / devicePixelRatio + 10}px`;
+        // Vertical: position near cursor, but clamp within plot area
+        let tooltipY = cursorCssY - tooltipHeight / 2;
+        tooltipY = Math.max(plotTop, Math.min(tooltipY, plotTop + plotHeight - tooltipHeight));
+        tooltip.style.top = `${tooltipY}px`;
     };
 }

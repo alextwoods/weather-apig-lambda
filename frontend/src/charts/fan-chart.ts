@@ -3,6 +3,7 @@ import type { ZoomLevel } from '../state/url-state';
 import { ZOOM_DURATION_SECONDS } from './zoom';
 import type { VariableColorKey } from './colors';
 import { VARIABLE_COLORS, CURRENT_TIME_STROKE, CURRENT_TIME_WIDTH, DAY_SHADE_FILL, DAY_SEPARATOR_STROKE, DAY_SEPARATOR_WIDTH, DAY_SEPARATOR_DASH } from './colors';
+import { createCrosshairTooltipHook } from './hooks';
 
 // --- Fan Chart Configuration ---
 
@@ -226,6 +227,7 @@ export function buildFanChartOptions(config: FanChartConfig): uPlot.Options {
     if (drawHooks.length > 0) {
         hooks.draw = drawHooks;
     }
+    hooks.setCursor = [createCrosshairTooltipHook()];
 
     // --- Scale configuration ---
     const yScale: uPlot.Scale = { auto: true };
@@ -367,6 +369,7 @@ export function buildMultiFanChartOptions(config: MultiFanChartConfig): uPlot.Op
     if (drawHooks.length > 0) {
         hooks.draw = drawHooks;
     }
+    hooks.setCursor = [createCrosshairTooltipHook()];
 
     // --- Scale ---
     const yScale: uPlot.Scale = { auto: true };

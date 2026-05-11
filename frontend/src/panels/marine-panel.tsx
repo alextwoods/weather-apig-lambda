@@ -4,9 +4,10 @@ import type { ZoomLevel, OverlayType } from '../state/url-state';
 import { convertWave, convertTemp } from '../units/converter';
 import { ChartWrapper } from '../charts/chart-wrapper';
 import { CHART_SYNC_KEY } from '../charts/sync';
-import { CURRENT_TIME_STROKE, CURRENT_TIME_WIDTH } from '../charts/colors';
+import { CURRENT_TIME_STROKE, CURRENT_TIME_WIDTH, DAY_SHADE_FILL } from '../charts/colors';
 import { timesToUnixSeconds, parseUtcMs } from '../api/time-utils';
 import { ZOOM_DURATION_SECONDS } from '../charts/zoom';
+import { createCrosshairTooltipHook } from '../charts/hooks';
 import uPlot from 'uplot';
 
 export interface MarinePanelProps {
@@ -43,6 +44,49 @@ function currentTimeHook(): (u: uPlot) => void {
         ctx.moveTo(cx, u.bbox.top);
         ctx.lineTo(cx, u.bbox.top + u.bbox.height);
         ctx.stroke();
+        ctx.restore();
+    };
+}
+
+/** Day shading hook — shades day areas with a subtle lighter overlay. */
+function buildDayShadingHook(times: number[], sunAltitude: number[]): (u: uPlot) => void {
+    return (u: uPlot) => {
+        const ctx = u.ctx;
+        ctx.save();
+        ctx.fillStyle = DAY_SHADE_FILL;
+        let inDay = false;
+        let dayStart = 0;
+        for (let i = 0; i < sunAltitude.length; i++) {
+            const isDay = sunAltitude[i] >= 0;
+            if (isDay && !inDay) {
+                if (i > 0 && sunAltitude[i - 1] < 0) {
+                    const frac = -sunAltitude[i - 1] / (sunAltitude[i] - sunAltitude[i - 1]);
+                    const interpTime = times[i - 1] + frac * (times[i] - times[i - 1]);
+                    dayStart = u.valToPos(interpTime, 'x', true);
+                } else {
+                    dayStart = u.valToPos(times[i], 'x', true);
+                }
+                inDay = true;
+            } else if (!isDay && inDay) {
+                let dayEnd: number;
+                if (i > 0 && sunAltitude[i - 1] >= 0) {
+                    const frac = sunAltitude[i - 1] / (sunAltitude[i - 1] - sunAltitude[i]);
+                    const interpTime = times[i - 1] + frac * (times[i] - times[i - 1]);
+                    dayEnd = u.valToPos(interpTime, 'x', true);
+                } else {
+                    dayEnd = u.valToPos(times[i], 'x', true);
+                }
+                const x1 = Math.max(dayStart, u.bbox.left);
+                const x2 = Math.min(dayEnd, u.bbox.left + u.bbox.width);
+                if (x2 > x1) ctx.fillRect(x1, u.bbox.top, x2 - x1, u.bbox.height);
+                inDay = false;
+            }
+        }
+        if (inDay) {
+            const dayEnd = u.bbox.left + u.bbox.width;
+            const x1 = Math.max(dayStart, u.bbox.left);
+            if (dayEnd > x1) ctx.fillRect(x1, u.bbox.top, dayEnd - x1, u.bbox.height);
+        }
         ctx.restore();
     };
 }
@@ -108,7 +152,7 @@ function buildWaveHeightOptions(
         scales: { x: { time: true }, y: { min: 0, auto: true } },
         cursor: { sync: { key: syncKey } },
         legend: { show: false },
-        hooks: { draw: drawHooks },
+        hooks: { draw: drawHooks, setCursor: [createCrosshairTooltipHook()] },
     };
 }
 
@@ -137,19 +181,18 @@ function buildSstOptions(label: string, syncKey: string): uPlot.Options {
         scales: { x: { time: true }, y: { auto: true } },
         cursor: { sync: { key: syncKey } },
         legend: { show: false },
-        hooks: { draw: [currentTimeHook()] },
+        hooks: { draw: [currentTimeHook()], setCursor: [createCrosshairTooltipHook()] },
     };
 }
 
 /**
  * Builds uPlot options for the tide chart.
- * Teal line with sun altitude (yellow) and moon altitude (gray) overlays.
+ * Teal line with day/night shading and current time indicator.
  */
 function buildTideChartOptions(
     syncKey: string,
     sunAltitude?: number[],
-    moonAltitude?: number[],
-    astronomyTimes?: number[],
+    sunAltitudeTimes?: number[],
 ): uPlot.Options {
     const series: uPlot.Series[] = [
         {},
@@ -163,28 +206,16 @@ function buildTideChartOptions(
         },
     ];
 
-    // Add sun altitude series if available
-    if (sunAltitude) {
-        series.push({
-            label: 'Sun',
-            show: true,
-            stroke: 'rgba(250, 204, 21, 0.6)',
-            width: 1.5,
-            points: { show: false },
-        });
+    // Draw hooks
+    const drawHooks: ((u: uPlot) => void)[] = [];
+
+    // Day/night shading
+    if (sunAltitude && sunAltitudeTimes && sunAltitude.length > 0) {
+        drawHooks.push(buildDayShadingHook(sunAltitudeTimes, sunAltitude));
     }
 
-    // Add moon altitude series if available
-    if (moonAltitude) {
-        series.push({
-            label: 'Moon',
-            show: true,
-            stroke: 'rgba(156, 163, 175, 0.6)',
-            width: 1.5,
-            dash: [4, 3],
-            points: { show: false },
-        });
-    }
+    // Current time indicator
+    drawHooks.push(currentTimeHook());
 
     return {
         width: 800,
@@ -197,7 +228,7 @@ function buildTideChartOptions(
         scales: { x: { time: true }, y: { auto: true } },
         cursor: { sync: { key: syncKey } },
         legend: { show: false },
-        hooks: { draw: [currentTimeHook()] },
+        hooks: { draw: drawHooks, setCursor: [createCrosshairTooltipHook()] },
     };
 }
 
@@ -286,14 +317,11 @@ export function MarinePanel({ forecast, units, overlays: _overlays, zoom }: Mari
 
         const dataArrays: (number | null | undefined)[][] = [tideTimes as any, tideHeights];
 
-        // Normalize sun/moon altitude to tide Y-axis range for overlay
+        // Sun altitude data for day/night shading
         const sunAlt = astronomy?.sun_altitude;
-        const moonAlt = astronomy?.moon_altitude;
         const astroTimes = astronomy?.times ? timesToUnixSeconds(astronomy.times) : undefined;
 
-        // For now, pass sun/moon as separate series if available and times align
-        // (simplified: just show tide line for now, sun/moon would need time alignment)
-        tideOptions = applyZoomScale(buildTideChartOptions(CHART_SYNC_KEY));
+        tideOptions = applyZoomScale(buildTideChartOptions(CHART_SYNC_KEY, sunAlt, astroTimes));
         tideData = [tideTimes, tideHeights] as uPlot.AlignedData;
     }
 

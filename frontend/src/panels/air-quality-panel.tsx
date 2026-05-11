@@ -7,6 +7,7 @@ import { getAqiCategory } from '../units/aqi';
 import { CURRENT_TIME_STROKE, CURRENT_TIME_WIDTH } from '../charts/colors';
 import { timesToUnixSeconds, parseUtcMs } from '../api/time-utils';
 import { ZOOM_DURATION_SECONDS } from '../charts/zoom';
+import { createCrosshairTooltipHook } from '../charts/hooks';
 import uPlot from 'uplot';
 
 export interface AirQualityPanelProps {
@@ -126,6 +127,7 @@ function buildAqiChartOptions(syncKey: string, zoomLevel?: ZoomLevel): uPlot.Opt
                 // Current time indicator
                 currentTimeHook(),
             ],
+            setCursor: [createCrosshairTooltipHook()],
         },
     };
 }
